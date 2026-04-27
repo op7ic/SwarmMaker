@@ -148,9 +148,11 @@ func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projec
 			}
 		}
 	}
-	// Emit cross-platform .agents/skills/<slug>/SKILL.md for each skill.
+	// Emit cross-platform .agents/skills/<slug>/SKILL.md for each skill,
+	// with progressive disclosure: large skills get a references/ subdirectory.
 	for _, skill := range bundle.Blueprint.Skills {
-		agentsSkillPath := filepath.Join(stagingDir, ".agents", "skills", textutil.Slugify(skill.Slug), "SKILL.md")
+		slug := textutil.Slugify(skill.Slug)
+		agentsSkillPath := filepath.Join(stagingDir, ".agents", "skills", slug, "SKILL.md")
 		cleanAgentsPath := filepath.Clean(agentsSkillPath)
 		if !strings.HasPrefix(cleanAgentsPath, cleanStaging+string(filepath.Separator)) && cleanAgentsPath != cleanStaging {
 			return fmt.Errorf("agents skill path %q escapes staging directory", agentsSkillPath)
@@ -158,9 +160,22 @@ func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projec
 		if err := os.MkdirAll(filepath.Dir(agentsSkillPath), 0755); err != nil {
 			return fmt.Errorf("create .agents/skills dir for %s: %w", skill.Slug, err)
 		}
-		content := output.BuildSkillContent(skill)
-		if err := os.WriteFile(agentsSkillPath, []byte(content), 0644); err != nil {
+		split := output.BuildSkillSplit(skill)
+		if err := os.WriteFile(agentsSkillPath, []byte(split.Main), 0644); err != nil {
 			return fmt.Errorf("write .agents/skills/%s/SKILL.md: %w", skill.Slug, err)
+		}
+		if split.References != "" {
+			refPath := filepath.Join(stagingDir, ".agents", "skills", slug, split.RefPath)
+			cleanRefPath := filepath.Clean(refPath)
+			if !strings.HasPrefix(cleanRefPath, cleanStaging+string(filepath.Separator)) && cleanRefPath != cleanStaging {
+				return fmt.Errorf("agents skill ref path %q escapes staging directory", refPath)
+			}
+			if err := os.MkdirAll(filepath.Dir(refPath), 0755); err != nil {
+				return fmt.Errorf("create references dir for %s: %w", skill.Slug, err)
+			}
+			if err := os.WriteFile(refPath, []byte(split.References), 0644); err != nil {
+				return fmt.Errorf("write %s: %w", split.RefPath, err)
+			}
 		}
 	}
 
@@ -171,6 +186,9 @@ func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projec
 		return err
 	}
 	if err := writeInstallScript(stagingDir, formats); err != nil {
+		return err
+	}
+	if err := writeOutputGitignore(stagingDir); err != nil {
 		return err
 	}
 
@@ -386,6 +404,20 @@ echo "Installed SwarmMaker bundle into $TARGET_DIR (mode=$MODE formats=%s)"
 `, removeLine.String(), copyLines.String(), formatNames.String())
 	path := filepath.Join(outputDir, "install.sh")
 	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func writeOutputGitignore(outputDir string) error {
+	content := `# SwarmMaker debug artifacts (not needed for skill execution)
+.tasks/ir/
+.tasks/evidence.json
+.tasks/manifest.json
+.tasks/validation-report.md
+`
+	path := filepath.Join(outputDir, ".gitignore")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
@@ -650,6 +682,7 @@ func prepareOutputTree(outputDir string, formats []output.Format, force bool) er
 		filepath.Join(outputDir, "README.md"),
 		filepath.Join(outputDir, "REVIEW_CHECKLIST.md"),
 		filepath.Join(outputDir, "install.sh"),
+		filepath.Join(outputDir, ".gitignore"),
 		filepath.Join(outputDir, "evidence.json"),
 		filepath.Join(outputDir, "evidence-manifest.json"),
 		filepath.Join(outputDir, "validation-report.md"),

@@ -325,6 +325,89 @@ func buildSkillIndexContent(spec TreeSpec, blueprint Blueprint, indexPath, entry
 	return b.String()
 }
 
+// SkillSplit holds the result of progressive disclosure splitting.
+// If References is non-empty, the skill body was large enough to warrant
+// moving detailed sections into a references file.
+type SkillSplit struct {
+	Main       string // SKILL.md content (frontmatter + summary + core sections)
+	References string // references/<slug>-details.md content, empty if no split
+	RefPath    string // relative path for the references file (e.g. "references/<slug>-details.md")
+}
+
+// BuildSkillSplit renders a skill with progressive disclosure for .agents/skills/.
+// Skills over 100 lines get split: core content stays in SKILL.md, detailed
+// input schemas and constraint rationale move to references/<slug>-details.md.
+func BuildSkillSplit(skill Skill) SkillSplit {
+	full := buildSkillContent(skill, "")
+	lines := strings.Split(full, "\n")
+	if len(lines) <= 100 {
+		return SkillSplit{Main: full}
+	}
+
+	// Split: keep frontmatter + summary + When to Invoke + Process steps in main.
+	// Move Inputs Required and detailed Constraints into references.
+	slug := skillSlug(skill.Slug)
+	refPath := "references/" + slug + "-details.md"
+
+	bodyLines := strings.Split(skill.Body, "\n")
+	var mainBody, refBody strings.Builder
+	inRefSection := false
+	refSections := map[string]bool{
+		"## Inputs Required": true,
+		"## Constraints":     true,
+	}
+
+	for _, line := range bodyLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			_, isRef := refSections[trimmed]
+			if isRef {
+				inRefSection = true
+				refBody.WriteString(line)
+				refBody.WriteString("\n")
+				continue
+			}
+			inRefSection = false
+		}
+		if inRefSection {
+			refBody.WriteString(line)
+			refBody.WriteString("\n")
+		} else {
+			mainBody.WriteString(line)
+			mainBody.WriteString("\n")
+		}
+	}
+
+	refContent := strings.TrimSpace(refBody.String())
+	if refContent == "" {
+		// Nothing to split out, return full content.
+		return SkillSplit{Main: full}
+	}
+
+	// Build the main SKILL.md with a link to references.
+	mainSkill := Skill{
+		Name:    skill.Name,
+		Slug:    skill.Slug,
+		Summary: skill.Summary,
+		Body:    strings.TrimSpace(mainBody.String()) + "\n\nFor detailed input schemas and constraint rationale, see [" + refPath + "](" + refPath + ").",
+	}
+	main := buildSkillContent(mainSkill, "")
+
+	// Build the references file.
+	var ref strings.Builder
+	ref.WriteString("# ")
+	ref.WriteString(skill.Name)
+	ref.WriteString(" - Details\n\n")
+	ref.WriteString(refContent)
+	ref.WriteString("\n")
+
+	return SkillSplit{
+		Main:       main,
+		References: ref.String(),
+		RefPath:    refPath,
+	}
+}
+
 // BuildSkillContent renders a skill file with YAML frontmatter. Exported for
 // use by the cross-platform .agents/skills/ emitter in the CLI package.
 func BuildSkillContent(skill Skill) string {
@@ -353,13 +436,16 @@ func buildSkillContent(skill Skill, _ Format) string {
 
 // buildPushyDescription builds a frontmatter description that starts with an
 // action verb from the summary and appends "Use when" triggers extracted from
-// the "When to Invoke" section. The result is kept under 200 characters.
+// the "When to Invoke" section and "Do not use for" non-triggers extracted
+// from boundary/scope indicators. The result is kept under 200 characters.
 func buildPushyDescription(skill Skill) string {
 	summary := strings.TrimSpace(skill.Summary)
 	summary = strings.TrimRight(summary, ".!?;:")
 
 	triggers := extractWhenToInvokeTriggers(skill.Body)
-	if len(triggers) == 0 {
+	nonTriggers := extractNonTriggers(skill.Body)
+
+	if len(triggers) == 0 && len(nonTriggers) == 0 {
 		desc := summary + "."
 		if len(desc) > 200 {
 			desc = desc[:197] + "..."
@@ -367,19 +453,61 @@ func buildPushyDescription(skill Skill) string {
 		return desc
 	}
 
-	useWhen := "Use when " + strings.Join(triggers, ", ") + "."
-	desc := summary + ". " + useWhen
+	// Build with triggers and non-triggers, fitting within 200 chars.
+	var useWhen, doNotUse string
+	if len(triggers) > 0 {
+		useWhen = "Use when " + strings.Join(triggers, ", ") + "."
+	}
+	if len(nonTriggers) > 0 {
+		doNotUse = "Do not use for " + strings.Join(nonTriggers, ", ") + "."
+	}
+
+	// Try full combination first.
+	parts := []string{summary}
+	if useWhen != "" {
+		parts = append(parts, useWhen)
+	}
+	if doNotUse != "" {
+		parts = append(parts, doNotUse)
+	}
+	desc := strings.Join(parts, ". ")
+	if !strings.HasSuffix(desc, ".") {
+		desc += "."
+	}
 	if len(desc) <= 200 {
 		return desc
 	}
-	// Try with fewer triggers.
-	for n := len(triggers) - 1; n >= 1; n-- {
+
+	// Try with fewer triggers, keeping non-trigger.
+	for n := len(triggers); n >= 1; n-- {
+		useWhen = "Use when " + strings.Join(triggers[:n], ", ") + "."
+		parts = []string{summary, useWhen}
+		if doNotUse != "" {
+			parts = append(parts, doNotUse)
+		}
+		desc = strings.Join(parts, ". ")
+		if len(desc) <= 200 {
+			return desc
+		}
+	}
+
+	// Try summary + non-trigger only.
+	if doNotUse != "" {
+		desc = summary + ". " + doNotUse
+		if len(desc) <= 200 {
+			return desc
+		}
+	}
+
+	// Try summary + triggers only (no non-trigger).
+	for n := len(triggers); n >= 1; n-- {
 		useWhen = "Use when " + strings.Join(triggers[:n], ", ") + "."
 		desc = summary + ". " + useWhen
 		if len(desc) <= 200 {
 			return desc
 		}
 	}
+
 	// Fall back to summary only.
 	desc = summary + "."
 	if len(desc) > 200 {
@@ -416,6 +544,65 @@ func extractWhenToInvokeTriggers(body string) []string {
 		}
 	}
 	return triggers
+}
+
+// extractNonTriggers parses the skill body for scope boundaries and negative
+// conditions, returning up to 2 non-trigger phrases. It looks for:
+// - "does not own" / "does NOT" / "does not handle" patterns
+// - "Boundaries" section bullet items
+// - "UNKNOWN Gates" items (things the skill cannot do)
+func extractNonTriggers(body string) []string {
+	var nonTriggers []string
+
+	lines := strings.Split(body, "\n")
+
+	// Look for "Boundaries" section bullets.
+	inBoundaries := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.EqualFold(trimmed, "## Boundaries") {
+			inBoundaries = true
+			continue
+		}
+		if inBoundaries && strings.HasPrefix(trimmed, "## ") {
+			break
+		}
+		if inBoundaries && strings.HasPrefix(trimmed, "- ") {
+			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			item = strings.TrimRight(item, ".!?;:")
+			item = strings.ToLower(item[:1]) + item[1:]
+			if item != "" {
+				nonTriggers = append(nonTriggers, item)
+			}
+			if len(nonTriggers) >= 2 {
+				return nonTriggers
+			}
+		}
+	}
+
+	// Look for inline "does not" patterns anywhere in the body.
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		for _, pattern := range []string{"does not own", "does not handle", "does not manage", "does not cover"} {
+			if idx := strings.Index(lower, pattern); idx >= 0 {
+				// Extract the clause from the pattern onward.
+				clause := trimmed[idx:]
+				clause = strings.TrimRight(clause, ".!?;:")
+				// Trim to keep it short.
+				if len(clause) > 60 {
+					clause = clause[:57] + "..."
+				}
+				clause = strings.ToLower(clause[:1]) + clause[1:]
+				nonTriggers = append(nonTriggers, clause)
+				if len(nonTriggers) >= 2 {
+					return nonTriggers
+				}
+			}
+		}
+	}
+
+	return nonTriggers
 }
 
 func sortedDocs(docs []Document) []Document {

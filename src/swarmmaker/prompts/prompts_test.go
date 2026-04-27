@@ -13,6 +13,7 @@
 package prompts
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -84,7 +85,7 @@ func TestCompileDraftPromptsIncludeSwarmMakerIR(t *testing.T) {
 				"SWARMMAKER TRUTH RULES",
 				"EXECUTION CONTRACT",
 				"Do not read workspace files",
-				"Output ONLY markdown",
+				"Output markdown only",
 				"Write the actual .tasks artifact body",
 				"CITATION CONTRACT",
 				"[notes.md](/tmp/input/notes.md)",
@@ -134,8 +135,8 @@ func TestCompileDraftPromptAddsNonRemovableSkillAndAgentCompilerContracts(t *tes
 		"`.tasks/skills.md` is compiler input",
 		"Every slug must be unique",
 		"Process:",
-		"MUST DO",
-		"MUST NOT",
+		"Required",
+		"Prohibited",
 		"When to Invoke:",
 	} {
 		if !strings.Contains(skillPrompt, want) {
@@ -783,11 +784,11 @@ func TestSkillContractHasConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
 	}
-	if !strings.Contains(prompt, "MUST DO") {
-		t.Fatal("skill prompt missing MUST DO constraint section")
+	if !strings.Contains(prompt, "Required") {
+		t.Fatal("skill prompt missing Required constraint section")
 	}
-	if !strings.Contains(prompt, "MUST NOT") {
-		t.Fatal("skill prompt missing MUST NOT constraint section")
+	if !strings.Contains(prompt, "Prohibited") {
+		t.Fatal("skill prompt missing Prohibited constraint section")
 	}
 }
 
@@ -838,6 +839,94 @@ func TestSkillContractHasCheckpoint(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "CHECKPOINT") {
 		t.Fatal("skill prompt missing CHECKPOINT guidance")
+	}
+}
+
+func TestConstraintReminderPresent(t *testing.T) {
+	ir := validIR()
+	for _, kind := range requiredDraftKinds() {
+		t.Run(string(kind), func(t *testing.T) {
+			prompt, err := CompileDraftPrompt(kind, ir)
+			if err != nil {
+				t.Fatalf("CompileDraftPrompt(%s): %v", kind, err)
+			}
+			if !strings.Contains(prompt, "REMINDER (these rules override everything above)") {
+				t.Fatalf("prompt %s missing REMINDER block", kind)
+			}
+			// Verify the reminder appears after outputOnlyMarkdown and before
+			// the template body (which comes after artifactOutputContract).
+			reminderIdx := strings.Index(prompt, "REMINDER (these rules override everything above)")
+			markdownIdx := strings.Index(prompt, "Output markdown only")
+			if reminderIdx < markdownIdx {
+				t.Fatalf("prompt %s: REMINDER appears before outputOnlyMarkdown", kind)
+			}
+		})
+	}
+}
+
+func TestReviewPromptSizeCapped(t *testing.T) {
+	ir := validIR()
+	// Create 9 large file snapshots (10K chars each = 90K total uncapped)
+	largeContent := strings.Repeat("x", 10000)
+	var files []PromptFileSnapshot
+	var flagged []string
+	for i := 0; i < 9; i++ {
+		rel := fmt.Sprintf(".tasks/file%d.md", i)
+		abs := fmt.Sprintf("/tmp/out/.tasks/file%d.md", i)
+		files = append(files, PromptFileSnapshot{
+			RelPath: rel,
+			AbsPath: abs,
+			Content: largeContent,
+		})
+		flagged = append(flagged, rel)
+	}
+	prompt, err := AdversarialReviewPrompt(ir, files, flagged, []string{"test finding"})
+	if err != nil {
+		t.Fatalf("AdversarialReviewPrompt failed: %v", err)
+	}
+	// The file blocks portion should be capped; total prompt should be under 35K chars
+	// for the file content portion (allowing overhead for headers, contracts, etc.)
+	fileBlocksContent := promptFileBlocks(files)
+	if len(fileBlocksContent) > 35000 {
+		t.Fatalf("promptFileBlocks too large: %d chars (expect < 35000)", len(fileBlocksContent))
+	}
+	// Verify truncation markers are present
+	if !strings.Contains(prompt, "TRUNCATED") {
+		t.Fatal("expected TRUNCATED marker in size-capped review prompt")
+	}
+}
+
+func TestNoAllCapsMustInPrompts(t *testing.T) {
+	ir := validIR()
+	// Check all draft prompts for standalone ALL-CAPS MUST or NEVER
+	for _, kind := range requiredDraftKinds() {
+		t.Run(string(kind), func(t *testing.T) {
+			prompt, err := CompileDraftPrompt(kind, ir)
+			if err != nil {
+				t.Fatalf("CompileDraftPrompt(%s): %v", kind, err)
+			}
+			// Split into words and check for standalone MUST or NEVER in all-caps.
+			// Allow them inside quoted examples (lines starting with "- WRONG:" or
+			// "- RIGHT:" or inside backtick-quoted strings).
+			for _, line := range strings.Split(prompt, "\n") {
+				trimmed := strings.TrimSpace(line)
+				// Skip quoted example lines
+				if strings.HasPrefix(trimmed, "- WRONG:") || strings.HasPrefix(trimmed, "- RIGHT:") {
+					continue
+				}
+				// Skip lines inside code blocks (backtick-fenced)
+				if strings.HasPrefix(trimmed, "```") {
+					continue
+				}
+				words := strings.Fields(trimmed)
+				for _, w := range words {
+					clean := strings.Trim(w, ".,;:!?()[]\"'`")
+					if clean == "MUST" || clean == "NEVER" {
+						t.Errorf("prompt %s contains standalone ALL-CAPS %q in line: %s", kind, clean, trimmed)
+					}
+				}
+			}
+		})
 	}
 }
 

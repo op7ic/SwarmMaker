@@ -546,3 +546,57 @@ func testPromptIR() prompts.PromptIR {
 		ToolLanguages:        []string{"go"},
 	}
 }
+
+// --- Two-phase generation tests ---
+
+func TestTwoPhaseGeneration(t *testing.T) {
+	ir := testPromptIR()
+	pack, err := prompts.DefaultPack()
+	if err != nil {
+		t.Fatalf("DefaultPack failed: %v", err)
+	}
+
+	phaseA, err := BuildPhaseATasks(ir, "", pack)
+	if err != nil {
+		t.Fatalf("BuildPhaseATasks failed: %v", err)
+	}
+	if len(phaseA) != 2 {
+		t.Fatalf("BuildPhaseATasks returned %d tasks, want 2", len(phaseA))
+	}
+
+	// Verify Phase A contains context and tasks
+	names := map[string]bool{}
+	for _, task := range phaseA {
+		names[task.Name] = true
+	}
+	if !names["context"] {
+		t.Error("Phase A missing 'context' task")
+	}
+	if !names["tasks"] {
+		t.Error("Phase A missing 'tasks' task")
+	}
+
+	phaseB, err := BuildPhaseBTasks(ir, "", pack, "LEDGER CONTEXT: test\n")
+	if err != nil {
+		t.Fatalf("BuildPhaseBTasks failed: %v", err)
+	}
+	if len(phaseB) != 7 {
+		t.Fatalf("BuildPhaseBTasks returned %d tasks, want 7", len(phaseB))
+	}
+
+	// Verify Phase B prompts include ledger context
+	for _, task := range phaseB {
+		if !strings.Contains(task.Prompt, "LEDGER CONTEXT: test") {
+			t.Errorf("Phase B task %q missing ledger context prefix", task.Name)
+		}
+	}
+
+	// Verify combined count equals original BuildTasksWithPack
+	allTasks, err := BuildTasksWithPack(ir, "", pack)
+	if err != nil {
+		t.Fatalf("BuildTasksWithPack failed: %v", err)
+	}
+	if len(phaseA)+len(phaseB) != len(allTasks) {
+		t.Errorf("phase A (%d) + phase B (%d) != total (%d)", len(phaseA), len(phaseB), len(allTasks))
+	}
+}

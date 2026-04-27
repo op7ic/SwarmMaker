@@ -29,15 +29,25 @@ func BuildTasks(ir prompts.PromptIR, sourceHints string) ([]Task, error) {
 	return BuildTasksWithPack(ir, sourceHints, pack)
 }
 
-func BuildTasksWithPack(ir prompts.PromptIR, sourceHints string, pack prompts.Pack) ([]Task, error) {
-	specs := []struct {
-		name       string
-		outputFile string
-		kind       prompts.DraftKind
-		minLen     int
-	}{
+// taskSpec describes a single ledger file to generate.
+type taskSpec struct {
+	name       string
+	outputFile string
+	kind       prompts.DraftKind
+	minLen     int
+}
+
+// phaseASpecs returns foundational tasks (context + tasks) that run first.
+func phaseASpecs() []taskSpec {
+	return []taskSpec{
 		{"context", ".tasks/context.md", prompts.DraftContext, 300},
 		{"tasks", ".tasks/tasks.md", prompts.DraftTasks, 300},
+	}
+}
+
+// phaseBSpecs returns dependent tasks that run after phase A completes.
+func phaseBSpecs() []taskSpec {
+	return []taskSpec{
 		{"prompt-product", ".tasks/prompts/product.md", prompts.DraftPromptProduct, 250},
 		{"prompt-technical", ".tasks/prompts/technical.md", prompts.DraftPromptTechnical, 250},
 		{"prompt-tools", ".tasks/prompts/tools.md", prompts.DraftPromptTools, 220},
@@ -46,6 +56,20 @@ func BuildTasksWithPack(ir prompts.PromptIR, sourceHints string, pack prompts.Pa
 		{"skills", ".tasks/skills.md", prompts.DraftSkills, 250},
 		{"agents", ".tasks/agents.md", prompts.DraftAgents, 250},
 	}
+}
+
+// BuildPhaseATasks returns only the foundational tasks (context.md, tasks.md).
+func BuildPhaseATasks(ir prompts.PromptIR, sourceHints string, pack prompts.Pack) ([]Task, error) {
+	return buildTasksFromSpecs(phaseASpecs(), ir, sourceHints, pack, "")
+}
+
+// BuildPhaseBTasks returns the dependent tasks with an optional ledger context
+// prefix injected into each prompt.
+func BuildPhaseBTasks(ir prompts.PromptIR, sourceHints string, pack prompts.Pack, ledgerContext string) ([]Task, error) {
+	return buildTasksFromSpecs(phaseBSpecs(), ir, sourceHints, pack, ledgerContext)
+}
+
+func buildTasksFromSpecs(specs []taskSpec, ir prompts.PromptIR, sourceHints string, pack prompts.Pack, ledgerContext string) ([]Task, error) {
 	tasks := make([]Task, 0, len(specs))
 	for _, spec := range specs {
 		prompt, err := prompts.CompileDraftPromptWithPack(spec.kind, ir, pack)
@@ -55,9 +79,16 @@ func BuildTasksWithPack(ir prompts.PromptIR, sourceHints string, pack prompts.Pa
 		tasks = append(tasks, Task{
 			Name:       spec.name,
 			OutputFile: spec.outputFile,
-			Prompt:     sourceHints + prompt,
+			Prompt:     ledgerContext + sourceHints + prompt,
 			MinLen:     spec.minLen,
 		})
 	}
 	return tasks, nil
+}
+
+// BuildTasksWithPack creates all 9 tasks in a single batch (no two-phase split).
+// Retained for backward compatibility and tests that expect a flat task list.
+func BuildTasksWithPack(ir prompts.PromptIR, sourceHints string, pack prompts.Pack) ([]Task, error) {
+	allSpecs := append(phaseASpecs(), phaseBSpecs()...)
+	return buildTasksFromSpecs(allSpecs, ir, sourceHints, pack, "")
 }

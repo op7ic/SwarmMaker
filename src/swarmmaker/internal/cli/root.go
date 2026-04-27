@@ -201,6 +201,12 @@ type validationReport struct {
 	postScreen       *swarm.PreScreenResult // re-screen after revision (nil if no revision)
 	renderParity     []swarm.Issue
 	renderError      string
+	// Cost tracking
+	llmCalls     int
+	inputTokens  int
+	outputTokens int
+	// Prompt injection warnings from ingestion
+	injectionWarnings []string
 }
 
 type revisionResult struct {
@@ -484,27 +490,49 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	green.Println("  Source material: SUFFICIENT")
 	fmt.Println()
 
-	// Phase 3: Run task-ledger generation tasks.
-	tasks, err := swarm.BuildTasksWithPack(promptIR, sourceHints, promptPack)
-	if err != nil {
-		return fmt.Errorf("building task-ledger prompts: %w", err)
-	}
+	// Phase 3: Run task-ledger generation in two phases.
+	// Phase A generates foundational files (context.md, tasks.md).
+	// Phase B uses a summary of Phase A output as ledger context for the remaining 7 files.
 	sw := swarm.New(exec, absOutput, verbose)
 	bold.Printf("[3/5] Running task-ledger generation swarm (%d agents, concurrency %d)...\n", len(ledgerFiles), sw.Concurrency)
-	results := sw.Run(tasks)
 
-	successes := swarm.SuccessCount(results)
-	failures := swarm.Failures(results)
-	total := len(tasks)
-
-	if len(failures) > 0 {
-		red.Printf("  %d/%d tasks failed, aborting\n", len(failures), total)
+	// Phase A: foundational files
+	phaseATasks, err := swarm.BuildPhaseATasks(promptIR, sourceHints, promptPack)
+	if err != nil {
+		return fmt.Errorf("building phase A prompts: %w", err)
+	}
+	fmt.Println("  Phase A: generating foundational files (context.md, tasks.md)...")
+	phaseAResults := sw.Run(phaseATasks)
+	if failures := swarm.Failures(phaseAResults); len(failures) > 0 {
+		red.Printf("  %d/%d phase A tasks failed, aborting\n", len(failures), len(phaseATasks))
 		for _, f := range failures {
 			red.Printf("    x %s: %v\n", f.Task.Name, f.Error)
 		}
-		return fmt.Errorf("%d/%d swarm tasks failed", len(failures), total)
+		return fmt.Errorf("%d/%d phase A swarm tasks failed", len(failures), len(phaseATasks))
 	}
-	green.Printf("  %d/%d tasks completed\n", successes, total)
+	green.Printf("  Phase A: %d/%d foundational files completed\n", swarm.SuccessCount(phaseAResults), len(phaseATasks))
+
+	// Build ledger context summary from Phase A outputs
+	ledgerContext := buildLedgerContext(absOutput)
+
+	// Phase B: dependent files with ledger context
+	phaseBTasks, err := swarm.BuildPhaseBTasks(promptIR, sourceHints, promptPack, ledgerContext)
+	if err != nil {
+		return fmt.Errorf("building phase B prompts: %w", err)
+	}
+	fmt.Println("  Phase B: generating dependent files with ledger context...")
+	phaseBResults := sw.Run(phaseBTasks)
+	if failures := swarm.Failures(phaseBResults); len(failures) > 0 {
+		red.Printf("  %d/%d phase B tasks failed, aborting\n", len(failures), len(phaseBTasks))
+		for _, f := range failures {
+			red.Printf("    x %s: %v\n", f.Task.Name, f.Error)
+		}
+		return fmt.Errorf("%d/%d phase B swarm tasks failed", len(failures), len(phaseBTasks))
+	}
+
+	total := len(phaseATasks) + len(phaseBTasks)
+	successes := swarm.SuccessCount(phaseAResults) + swarm.SuccessCount(phaseBResults)
+	green.Printf("  %d/%d tasks completed (two-phase)\n", successes, total)
 	fmt.Println()
 
 	// -------------------------------------------------------
@@ -541,6 +569,19 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	// Total pipeline: 8-11 calls depending on critique/revision outcome.
 	//
 	bold.Println("[4/5] Validating...")
+	// Estimate cost from swarm generation tasks (v1: rough char/4 estimate)
+	allTasks := append(phaseATasks, phaseBTasks...)
+	allResults := append(phaseAResults, phaseBResults...)
+	swarmLLMCalls := len(allTasks)
+	swarmInputTokens := 0
+	swarmOutputTokens := 0
+	for _, t := range allTasks {
+		swarmInputTokens += len(t.Prompt) / 4
+	}
+	for _, r := range allResults {
+		swarmOutputTokens += len(r.Content) / 4
+	}
+
 	report := &validationReport{
 		complexity:       complexity,
 		evidenceCount:    len(ingested.Evidence),
@@ -551,6 +592,10 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 		promptPackDigest: promptPack.Digest(),
 		promptPackReview: promptPackReview,
 		routingEvents:    routingEvents,
+		llmCalls:          swarmLLMCalls + 1, // +1 for pre-flight
+		inputTokens:       swarmInputTokens,
+		outputTokens:      swarmOutputTokens,
+		injectionWarnings: collectInjectionWarnings(ingested.Evidence),
 	}
 	failValidation := func(err error) error {
 		if reportErr := writeValidationReport(tasksDir, report); reportErr != nil {
@@ -618,6 +663,11 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 			return failValidation(fmt.Errorf("building adversarial review prompt: %w", err))
 		}
 		reviewResp, err := exec.RunCritic(reviewPrompt)
+		report.llmCalls++
+		if reviewResp != nil {
+			report.inputTokens += reviewResp.InputTokens
+			report.outputTokens += reviewResp.OutputTokens
+		}
 		if err != nil {
 			yellow.Printf("  Adversarial review failed: %v\n", err)
 			report.reviewVerdict = "error"
@@ -656,7 +706,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 					}
 
 					// Targeted revision: only revise files that still have flags.
-					roundRevisions := reviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, green, yellow)
+					roundRevisions := reviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow)
 					for i := range roundRevisions {
 						roundRevisions[i].Round = round
 					}
@@ -789,6 +839,7 @@ func reviseFromReview(
 	sourceHints string,
 	filesToRevise []string,
 	reviewFindings string,
+	report *validationReport,
 	green, yellow *color.Color,
 ) []revisionResult {
 	results := make([]revisionResult, 0, len(filesToRevise))
@@ -808,6 +859,11 @@ func reviseFromReview(
 		}
 		revPrompt := sourceHints + revisionPrompt
 		revResp, err := exec.RunPrimaryToFile(revPrompt, snapshot.AbsPath)
+		report.llmCalls++
+		if revResp != nil {
+			report.inputTokens += revResp.InputTokens
+			report.outputTokens += revResp.OutputTokens
+		}
 		if err != nil {
 			yellow.Printf("    ? %s: revision failed: %v\n", f, err)
 			results = append(results, revisionResult{File: f, Success: false})
@@ -839,21 +895,6 @@ func revisionRoundCount(revisions []revisionResult) int {
 	return maxRound
 }
 
-type evidenceManifest struct {
-	RootPath    string                    `json:"root_path"`
-	FileCount   int                       `json:"file_count"`
-	TotalBytes  int64                     `json:"total_bytes"`
-	Evidence    []ingestion.EvidenceEntry `json:"evidence"`
-	BinaryFiles []ingestion.FileEntry     `json:"binary_files"`
-	Files       []evidenceFile            `json:"files"`
-}
-
-type evidenceFile struct {
-	RelPath  string `json:"rel_path"`
-	FileType string `json:"file_type"`
-	Size     int64  `json:"size_bytes"`
-}
-
 type cliIRManifest struct {
 	ProductName      string   `json:"product_name"`
 	CLIName          string   `json:"cli_name"`
@@ -880,31 +921,48 @@ func writeEvidenceManifest(outputDir string, ctx *ingestion.Context) (string, er
 	if ctx == nil {
 		return "", fmt.Errorf("ingestion context is required")
 	}
-	files := make([]evidenceFile, 0, len(ctx.Files))
-	for _, file := range ctx.Files {
-		files = append(files, evidenceFile{
-			RelPath:  file.RelPath,
-			FileType: file.FileType,
-			Size:     file.Size,
-		})
-	}
-	manifest := evidenceManifest{
-		RootPath:    ctx.RootPath,
-		FileCount:   ctx.FileCount,
-		TotalBytes:  ctx.TotalBytes,
-		Evidence:    ctx.Evidence,
-		BinaryFiles: ctx.BinaryFiles,
-		Files:       files,
-	}
-	payload, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshal evidence manifest: %w", err)
-	}
 	path := filepath.Join(outputDir, "evidence.json")
-	if err := os.WriteFile(path, payload, 0644); err != nil {
-		return "", fmt.Errorf("write %s: %w", path, err)
+	// Write all current entries as JSONL (one JSON object per line), truncating any existing file.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return "", fmt.Errorf("create %s: %w", path, err)
+	}
+	defer f.Close()
+	for _, entry := range ctx.Evidence {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			return "", fmt.Errorf("marshal evidence entry: %w", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			return "", fmt.Errorf("write evidence entry: %w", err)
+		}
 	}
 	return path, nil
+}
+
+// buildLedgerContext reads the Phase A foundational files (context.md, tasks.md)
+// and produces a short summary block that gets prepended to Phase B prompts.
+// This ensures dependent files are consistent with foundational decisions.
+func buildLedgerContext(outputDir string) string {
+	const maxSummaryLen = 500
+	var parts []string
+	for _, rel := range []string{".tasks/context.md", ".tasks/tasks.md"} {
+		data, err := os.ReadFile(filepath.Join(outputDir, rel))
+		if err != nil {
+			continue
+		}
+		text := strings.TrimSpace(string(data))
+		if len(text) > maxSummaryLen {
+			text = text[:maxSummaryLen] + "..."
+		}
+		parts = append(parts, fmt.Sprintf("--- %s ---\n%s", rel, text))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "LEDGER CONTEXT (from already-generated foundational files):\n" +
+		strings.Join(parts, "\n") +
+		"\nEnsure your output is consistent with these foundational decisions.\n\n"
 }
 
 // scanImplementationDecisions scans planning-mode files for occurrences of
@@ -933,15 +991,51 @@ func scanImplementationDecisions(tasksDir string, planningFiles []string) []inge
 	return entries
 }
 
-// rewriteEvidenceManifest re-reads, appends new evidence entries, and re-writes
-// evidence.json. It returns the updated evidence slice.
+// rewriteEvidenceManifest appends new evidence entries to evidence.json using
+// JSONL append-only semantics. Each new entry is one JSON object per line,
+// appended to the existing file without reading or rewriting prior content.
 func rewriteEvidenceManifest(tasksDir string, ctx *ingestion.Context, newEntries []ingestion.EvidenceEntry) error {
 	if len(newEntries) == 0 {
 		return nil
 	}
 	ctx.Evidence = append(ctx.Evidence, newEntries...)
-	_, err := writeEvidenceManifest(tasksDir, ctx)
-	return err
+	path := filepath.Join(tasksDir, "evidence.json")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open %s for append: %w", path, err)
+	}
+	defer f.Close()
+	for _, entry := range newEntries {
+		line, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("marshal evidence entry: %w", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			return fmt.Errorf("append evidence entry: %w", err)
+		}
+	}
+	return nil
+}
+
+// readEvidenceEntries reads JSONL evidence entries from evidence.json.
+func readEvidenceEntries(path string) ([]ingestion.EvidenceEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []ingestion.EvidenceEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry ingestion.EvidenceEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, fmt.Errorf("parse evidence line: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 func writeIRManifest(path string, manifest cliIRManifest) error {
@@ -1320,6 +1414,26 @@ func writeValidationReport(outputDir string, r *validationReport) error {
 		b.WriteString("\n")
 	}
 
+	// Prompt injection warnings
+	if len(r.injectionWarnings) > 0 {
+		b.WriteString("## Prompt Injection Warnings\n\n")
+		b.WriteString(fmt.Sprintf("**%d file(s) contain potential prompt injection patterns.**\n", len(r.injectionWarnings)))
+		b.WriteString("These files were NOT modified. Review them before trusting LLM output.\n\n")
+		for _, w := range r.injectionWarnings {
+			b.WriteString(fmt.Sprintf("- %s\n", w))
+		}
+		b.WriteString("\n")
+	}
+
+	// Cost estimate
+	b.WriteString("## Cost Estimate\n\n")
+	b.WriteString(fmt.Sprintf("- **Total LLM calls**: %d\n", r.llmCalls))
+	b.WriteString(fmt.Sprintf("- **Estimated input tokens**: %d\n", r.inputTokens))
+	b.WriteString(fmt.Sprintf("- **Estimated output tokens**: %d\n", r.outputTokens))
+	inputCost := float64(r.inputTokens) * 3.0 / 1_000_000
+	outputCost := float64(r.outputTokens) * 15.0 / 1_000_000
+	b.WriteString(fmt.Sprintf("- **Estimated cost at $3/$15 per MTok (Sonnet)**: $%.4f\n\n", inputCost+outputCost))
+
 	// Summary
 	b.WriteString("## Summary\n\n")
 	totalErrorCount := programmaticErrorCount + swarm.ErrorCount(r.renderParity)
@@ -1432,6 +1546,18 @@ func reviewStatus(ok bool) string {
 		return "PASS"
 	}
 	return "FAIL"
+}
+
+// collectInjectionWarnings extracts prompt injection evidence entries
+// and formats them as human-readable warnings for the validation report.
+func collectInjectionWarnings(evidence []ingestion.EvidenceEntry) []string {
+	var warnings []string
+	for _, e := range evidence {
+		if e.Category == ingestion.EvidenceCategoryPromptInjection {
+			warnings = append(warnings, fmt.Sprintf("%s: %s", e.RelPath, e.Detail))
+		}
+	}
+	return warnings
 }
 
 // parseVerdict extracts the required APPROVE/REVISE verdict from cross-check output.

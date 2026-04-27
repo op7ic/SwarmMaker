@@ -14,6 +14,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,9 +232,20 @@ func TestWriteEvidenceManifestPersistsEvidence(t *testing.T) {
 		t.Fatalf("reading evidence manifest: %v", err)
 	}
 	text := string(payload)
-	for _, want := range []string{"hidden_path", "notes.md", "file_count"} {
+	for _, want := range []string{"hidden_path", ".env"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("evidence manifest missing %q:\n%s", want, text)
+		}
+	}
+	// Verify JSONL format: each non-empty line should be valid JSON.
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry ingestion.EvidenceEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("evidence line is not valid JSON: %v\nline: %s", err, line)
 		}
 	}
 }
@@ -1423,7 +1435,7 @@ func TestRewriteEvidenceManifestUpdatesFile(t *testing.T) {
 		t.Fatalf("rewriteEvidenceManifest failed: %v", err)
 	}
 
-	// Verify the file contains both old and new evidence
+	// Verify the file contains both old and new evidence as JSONL
 	payload, err := os.ReadFile(filepath.Join(tasksDir, "evidence.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -1433,6 +1445,15 @@ func TestRewriteEvidenceManifestUpdatesFile(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("evidence.json missing %q:\n%s", want, text)
 		}
+	}
+
+	// Verify JSONL: should have exactly 2 lines (one per entry)
+	entries, err := readEvidenceEntries(filepath.Join(tasksDir, "evidence.json"))
+	if err != nil {
+		t.Fatalf("readEvidenceEntries failed: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 evidence entries in JSONL, got %d", len(entries))
 	}
 
 	// Verify ctx.Evidence was updated
@@ -1598,5 +1619,214 @@ func TestBuildPreFlightPromptHandlesNilComplexity(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Depth classification: unknown") {
 		t.Error("nil complexity should default to 'unknown' depth")
+	}
+}
+
+func TestEvidenceAppendOnly(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &ingestion.Context{
+		RootPath:   "input",
+		FileCount:  1,
+		TotalBytes: 10,
+		Evidence: []ingestion.EvidenceEntry{
+			{
+				Phase:    ingestion.EvidencePhaseIngestion,
+				Category: ingestion.EvidenceCategoryHiddenPath,
+				RelPath:  ".secret",
+				Detail:   "hidden",
+			},
+		},
+	}
+
+	// Write initial entries.
+	path, err := writeEvidenceManifest(tasksDir, ctx)
+	if err != nil {
+		t.Fatalf("writeEvidenceManifest: %v", err)
+	}
+
+	// Read file size before append.
+	info1, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Append new entries.
+	newEntries := []ingestion.EvidenceEntry{
+		{
+			Phase:    ingestion.EvidencePhaseGeneration,
+			Category: ingestion.EvidenceCategoryImplementationDecision,
+			RelPath:  "tasks.md",
+			Detail:   "1 decision",
+		},
+	}
+	if err := rewriteEvidenceManifest(tasksDir, ctx, newEntries); err != nil {
+		t.Fatalf("rewriteEvidenceManifest: %v", err)
+	}
+
+	// File should be larger (appended, not rewritten from scratch).
+	info2, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info2.Size() <= info1.Size() {
+		t.Fatalf("expected file to grow after append, got %d <= %d", info2.Size(), info1.Size())
+	}
+
+	// Read back all entries.
+	entries, err := readEvidenceEntries(path)
+	if err != nil {
+		t.Fatalf("readEvidenceEntries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Category != ingestion.EvidenceCategoryHiddenPath {
+		t.Fatalf("first entry category = %q, want hidden_path", entries[0].Category)
+	}
+	if entries[1].Category != ingestion.EvidenceCategoryImplementationDecision {
+		t.Fatalf("second entry category = %q, want implementation_decision", entries[1].Category)
+	}
+}
+
+func TestCostEstimateInReport(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	report := &validationReport{
+		complexity:    &ingestion.SourceComplexity{Depth: "moderate", SectionCount: 3},
+		evidencePath:  "/tmp/evidence.json",
+		evidenceCount: 5,
+		irManifestPath: "/tmp/manifest.json",
+		promptPackName:   "default",
+		promptPackSource: "embedded",
+		promptPackDigest: "abc123",
+		reviewVerdict: "approve",
+		llmCalls:      12,
+		inputTokens:   50000,
+		outputTokens:  20000,
+	}
+
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+
+	for _, want := range []string{
+		"## Cost Estimate",
+		"Total LLM calls**: 12",
+		"Estimated input tokens**: 50000",
+		"Estimated output tokens**: 20000",
+		"$3/$15 per MTok",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("validation report missing %q", want)
+		}
+	}
+}
+
+func TestInjectionWarningsInReport(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	report := &validationReport{
+		complexity:    &ingestion.SourceComplexity{Depth: "shallow", SectionCount: 1},
+		evidencePath:  "/tmp/evidence.json",
+		evidenceCount: 2,
+		irManifestPath: "/tmp/manifest.json",
+		promptPackName:   "default",
+		promptPackSource: "embedded",
+		promptPackDigest: "abc123",
+		reviewVerdict: "approve",
+		injectionWarnings: []string{
+			"evil.md: prompt injection pattern detected: ignore previous instructions",
+		},
+	}
+
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+
+	for _, want := range []string{
+		"## Prompt Injection Warnings",
+		"1 file(s) contain potential prompt injection patterns",
+		"evil.md: prompt injection pattern detected",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("validation report missing %q", want)
+		}
+	}
+}
+
+func TestCollectInjectionWarnings(t *testing.T) {
+	evidence := []ingestion.EvidenceEntry{
+		{
+			Phase:    ingestion.EvidencePhaseIngestion,
+			Category: ingestion.EvidenceCategoryHiddenPath,
+			RelPath:  ".secret",
+			Detail:   "hidden path",
+		},
+		{
+			Phase:    ingestion.EvidencePhaseIngestion,
+			Category: ingestion.EvidenceCategoryPromptInjection,
+			RelPath:  "evil.md",
+			Detail:   "prompt injection pattern detected: ignore previous instructions",
+		},
+		{
+			Phase:    ingestion.EvidencePhaseIngestion,
+			Category: ingestion.EvidenceCategoryPromptInjection,
+			RelPath:  "tricky.txt",
+			Detail:   "prompt injection pattern detected: system prompt:",
+		},
+	}
+
+	warnings := collectInjectionWarnings(evidence)
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d", len(warnings))
+	}
+	if !strings.Contains(warnings[0], "evil.md") {
+		t.Errorf("warning[0] = %q, want evil.md", warnings[0])
+	}
+	if !strings.Contains(warnings[1], "tricky.txt") {
+		t.Errorf("warning[1] = %q, want tricky.txt", warnings[1])
+	}
+}
+
+func TestOutputBundleHasGitignore(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeOutputGitignore(dir); err != nil {
+		t.Fatalf("writeOutputGitignore: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("reading .gitignore: %v", err)
+	}
+	text := string(content)
+	for _, pattern := range []string{".tasks/ir/", ".tasks/evidence.json", ".tasks/manifest.json", ".tasks/validation-report.md"} {
+		if !strings.Contains(text, pattern) {
+			t.Fatalf(".gitignore missing pattern %q:\n%s", pattern, text)
+		}
 	}
 }

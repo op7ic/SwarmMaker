@@ -119,8 +119,14 @@ func flaggedPathList(files []PromptFileSnapshot, flagged []string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+const (
+	maxPerFileChars  = 5000
+	maxTotalFileChars = 30000
+)
+
 func promptFileBlocks(files []PromptFileSnapshot) string {
 	var b strings.Builder
+	totalChars := 0
 	for _, file := range files {
 		if strings.TrimSpace(file.RelPath) == "" || strings.TrimSpace(file.AbsPath) == "" {
 			continue
@@ -132,8 +138,24 @@ func promptFileBlocks(files []PromptFileSnapshot) string {
 		b.WriteString(file.AbsPath)
 		b.WriteString("\n")
 		b.WriteString("```md\n")
-		b.WriteString(file.Content)
-		if !strings.HasSuffix(file.Content, "\n") {
+		content := file.Content
+		contentLen := len(content)
+		if contentLen > maxPerFileChars {
+			content = content[:maxPerFileChars]
+			content += fmt.Sprintf("\n[TRUNCATED -- showing first %d of %d chars. Review full file at: %s]", maxPerFileChars, contentLen, file.AbsPath)
+		}
+		if totalChars+len(content) > maxTotalFileChars && totalChars > 0 {
+			remaining := maxTotalFileChars - totalChars
+			if remaining > 0 {
+				content = content[:remaining]
+				content += fmt.Sprintf("\n[TRUNCATED -- total review size cap reached. Review full file at: %s]", file.AbsPath)
+			} else {
+				content = fmt.Sprintf("[TRUNCATED -- total review size cap reached. Review full file at: %s]", file.AbsPath)
+			}
+		}
+		totalChars += len(content)
+		b.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
 			b.WriteString("\n")
 		}
 		b.WriteString("```\n\n")

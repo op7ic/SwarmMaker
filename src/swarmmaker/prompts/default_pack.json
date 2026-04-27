@@ -223,13 +223,13 @@
         "- Summary: <one-sentence purpose stating what this skill does and what output it produces>",
         "",
         "### When to Invoke",
-        "List 3-5 specific trigger conditions derived from source material. State the preconditions that MUST be true before this skill activates. Reference concrete data states, not abstract concepts.",
+        "List 3-5 specific trigger conditions derived from source material. State the preconditions that must be true before this skill activates. Reference concrete data states, not abstract concepts.",
         "",
         "### Inputs Required",
         "Name every data structure, field, format, and precondition this skill needs. Include JSON field names, types, and constraints when source material specifies them. Do not use generic references to `.tasks/` files; name the actual data.",
         "",
         "### Process",
-        "Write a numbered step-by-step procedure (typically 5-15 steps). Each step MUST be concrete enough for an engineer to implement without seeing the source material. Extract and include specific thresholds, formulas, field names, API endpoints, decision trees, and branching rules from source evidence. Where the source provides numeric values, tolerances, timeout durations, or classification rules, embed them directly in the step.",
+        "Write a numbered step-by-step procedure (typically 5-15 steps). Each step should be concrete enough for an engineer to implement without seeing the source material, because the skill file is the agent's only runtime reference. Extract and include specific thresholds, formulas, field names, API endpoints, decision trees, and branching rules from source evidence. Where the source provides numeric values, tolerances, timeout durations, or classification rules, embed them directly in the step.",
         "",
         "If the source does not contain enough detail for a complete procedural step, include what IS supported with `Source:` citations and mark the gap as `UNKNOWN: <what specific information is missing>`.",
         "",
@@ -238,8 +238,8 @@
         "",
         "### Constraints",
         "Split into two subsections:",
-        "- **MUST DO**: Rules derived from source requirements (latency targets, precision thresholds, availability guarantees, format mandates, audit requirements). Cite each rule.",
-        "- **MUST NOT**: Prohibitions derived from source material (no direct database access, no hardcoded credentials, no ML when rules suffice, no external calls without retry). Cite each prohibition.",
+        "- **Required**: Rules derived from source requirements (latency targets, precision thresholds, availability guarantees, format mandates, audit requirements). Include a brief rationale for each. Cite each rule.",
+        "- **Prohibited**: Prohibitions derived from source material (no direct database access, no hardcoded credentials, no ML when rules suffice, no external calls without retry). Include a brief rationale for each. Cite each prohibition.",
         "",
         "### UNKNOWN Gates",
         "List every unresolved dependency that blocks full execution of this skill. For each UNKNOWN, state: what fact is missing, which Process step it blocks, and what validation gate cannot pass without it.",
@@ -249,7 +249,7 @@
         "",
         "The skill set must be minimal but complete for the requested bundle. If two skills overlap, explain the boundary instead of emitting duplicates.",
         "Repeat the exact contract for every justified skill. Do not invent skills that are not supported by source material, PromptIR, or explicit implementation decisions.",
-        "Process steps MUST reference specific values from source (thresholds, field names, API endpoints, rules) -- generic descriptions like 'process the data' or 'validate the output' are insufficient."
+        "Process steps need to reference specific values from source (thresholds, field names, API endpoints, rules) -- generic descriptions like 'process the data' or 'validate the output' are insufficient because they produce unimplementable skills."
       ]
     },
     "agents": {
@@ -284,7 +284,7 @@
         "If the source does not specify failure handling for a known failure mode, mark it as `UNKNOWN: <failure mode> -- no source-backed recovery procedure`.",
         "",
         "### Validation Gates",
-        "List the specific checks that MUST pass before this agent hands off to the next. Each gate must name: what is checked, the pass/fail threshold or criterion, and what happens on failure. Generic statements like 'validate before handoff' are insufficient.",
+        "List the specific checks that need to pass before this agent hands off to the next, because the downstream agent depends on validated input. Each gate must name: what is checked, the pass/fail threshold or criterion, and what happens on failure. Generic statements like 'validate before handoff' are insufficient.",
         "",
         "### Critique and Revision Duties",
         "State whether this agent participates in critique/revision loops. If yes, describe what it reviews, what evidence it checks, and what verdict it produces. Cite source requirements for review criteria.",
@@ -294,7 +294,7 @@
         "",
         "The agent set must be minimal but complete for the requested bundle. If a specialized role replaces an OODA role, justify that replacement explicitly with source citations.",
         "Repeat the exact contract for every justified agent. Do not invent agents that are not supported by source material, PromptIR, or explicit implementation decisions.",
-        "Handoff data shapes MUST name concrete fields and types -- do not write 'passes data to next agent' without specifying what that data contains."
+        "Handoff data shapes need to name concrete fields and types -- do not write 'passes data to next agent' without specifying what that data contains, because the renderer validates field references across agent boundaries."
       ]
     }
   },

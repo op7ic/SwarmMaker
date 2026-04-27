@@ -24,10 +24,12 @@ import (
 
 const maxFileSize = 1024 * 1024 // 1MB per file max
 
-// TokenBudget controls how much content we include in the summary.
-// Default: 200K chars (~50K tokens). Files are included in priority order
-// and truncated or skipped when the budget is exhausted.
-const TokenBudget = 200000
+// TokenBudget is the maximum source material size in characters (~35K tokens).
+// Set to 70% of the 200K char window to account for context rot -- research
+// shows all LLMs degrade non-uniformly before their stated context limit
+// (Chroma Research, 2025). The remaining 30% is reserved for prompt overhead
+// (contracts, citations, IR metadata) and generation headroom.
+const TokenBudget = 140_000
 
 // FileEntry represents a single ingested file.
 type FileEntry struct {
@@ -256,6 +258,12 @@ func ReadFolder(rootPath string) (*Context, error) {
 		}
 		return ctx.Files[i].RelPath < ctx.Files[j].RelPath
 	})
+
+	// Scan for prompt injection patterns before building the summary.
+	// Content is never modified -- matches are recorded as evidence for
+	// human review.
+	injectionEvidence := ScanForInjection(ctx)
+	ctx.Evidence = append(ctx.Evidence, injectionEvidence...)
 
 	summary, summaryEvidence := buildSummary(ctx)
 	ctx.Summary = summary

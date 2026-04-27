@@ -753,8 +753,8 @@ func TestValidateOutputRejectsRateLimitShortOutput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for rate limit message")
 	}
-	if !strings.Contains(err.Error(), "refusal") {
-		t.Fatalf("error = %v, want refusal/error detection", err)
+	if !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("error = %v, want rate limit detection", err)
 	}
 }
 
@@ -869,5 +869,115 @@ func TestBuildArgsReturnsErrorForUnknownProvider(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported provider") {
 		t.Fatalf("error = %q, want 'unsupported provider'", err.Error())
+	}
+}
+
+func TestExecutorErrorClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		output    string
+		wantCode  string
+		wantRetry bool
+	}{
+		{
+			name:      "short output",
+			output:    "short",
+			wantCode:  "SHORT_OUTPUT",
+			wantRetry: true,
+		},
+		{
+			name:      "rate limit",
+			output:    "Rate limit exceeded. Please wait." + strings.Repeat("x", minOutputLen-len("Rate limit exceeded. Please wait.")),
+			wantCode:  "RATE_LIMIT",
+			wantRetry: true,
+		},
+		{
+			name:      "refusal",
+			output:    "I cannot help with that request." + strings.Repeat("x", minOutputLen-len("I cannot help with that request.")),
+			wantCode:  "REFUSAL",
+			wantRetry: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOutput(tt.output, "claude")
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			execErr, ok := err.(*ExecutorError)
+			if !ok {
+				t.Fatalf("expected *ExecutorError, got %T", err)
+			}
+			if execErr.Code != tt.wantCode {
+				t.Errorf("Code = %q, want %q", execErr.Code, tt.wantCode)
+			}
+			if execErr.Retryable != tt.wantRetry {
+				t.Errorf("Retryable = %v, want %v", execErr.Retryable, tt.wantRetry)
+			}
+			if execErr.Guidance == "" {
+				t.Error("Guidance should not be empty")
+			}
+		})
+	}
+}
+
+func TestExecutorErrorTimeout(t *testing.T) {
+	err := classifyTimeout("claude", 10*time.Minute, "/tmp/output.md", "some output")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Code != "TIMEOUT" {
+		t.Errorf("Code = %q, want TIMEOUT", err.Code)
+	}
+	if !err.Retryable {
+		t.Error("timeout should be retryable")
+	}
+	if err.Guidance == "" {
+		t.Error("Guidance should not be empty")
+	}
+}
+
+func TestResponseTokenEstimation(t *testing.T) {
+	resp := &Response{
+		Tool:   "claude",
+		Prompt: strings.Repeat("x", 400), // 400 chars = ~100 tokens
+		Output: strings.Repeat("y", 200), // 200 chars = ~50 tokens
+	}
+	resp.InputTokens = len(resp.Prompt) / 4
+	resp.OutputTokens = len(resp.Output) / 4
+
+	if resp.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", resp.InputTokens)
+	}
+	if resp.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", resp.OutputTokens)
+	}
+}
+
+func TestPromptSizeLimit(t *testing.T) {
+	bin := buildHarnessBinary(t)
+	t.Setenv("SWARMAKER_TEST_BEHAVIOR", "stdout-only")
+
+	e := &Executor{Timeout: time.Second}
+
+	// Prompt under limit should work
+	normalPrompt := strings.Repeat("x", maxPromptChars-1)
+	resp, err := e.run(harnessTool(bin), normalPrompt, "primary", "")
+	if err != nil {
+		t.Fatalf("normal prompt should succeed: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("response error = %v for normal prompt", resp.Error)
+	}
+
+	// Prompt over limit should fail immediately
+	hugePrompt := strings.Repeat("x", maxPromptChars+1)
+	resp, err = e.run(harnessTool(bin), hugePrompt, "primary", "")
+	if err == nil {
+		t.Fatal("expected error for oversized prompt")
+	}
+	if !strings.Contains(err.Error(), "prompt exceeds maximum size") {
+		t.Fatalf("error = %v, want prompt size limit error", err)
 	}
 }

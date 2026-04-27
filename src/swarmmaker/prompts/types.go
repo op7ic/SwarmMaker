@@ -238,11 +238,11 @@ func concisenessContract() string {
 func strictRules(planning bool) string {
 	var b strings.Builder
 	b.WriteString("SWARMMAKER TRUTH RULES:\n")
-	b.WriteString("- No empty/default value may influence final output. If a required source fact is missing, write UNKNOWN and mark the dependent decision gate as failed.\n")
-	b.WriteString("- No hidden fallback. Every fallback must be explicit, logged, counted, and visible in the evidence trail.\n")
-	b.WriteString("- No partial parsing. If source material is malformed, preserve the raw payload and state why the dependent decision cannot be made.\n")
-	b.WriteString("- No schema drift. Generated artifacts must target every requested output format exactly.\n")
-	b.WriteString("- No success without evidence. Every major claim must cite source material or recorded implementation-decision evidence.\n")
+	b.WriteString("- No empty/default value may influence final output because the validation pipeline treats default values as system lies and will fail the build. If a required source fact is missing, write UNKNOWN and mark the dependent decision gate as failed.\n")
+	b.WriteString("- No hidden fallback because silent fallbacks corrupt downstream artifacts that depend on accurate data. Every fallback must be explicit, logged, counted, and visible in the evidence trail.\n")
+	b.WriteString("- No partial parsing because incomplete data propagates errors to every dependent artifact. If source material is malformed, preserve the raw payload and state why the dependent decision cannot be made.\n")
+	b.WriteString("- No schema drift because the renderer validates output format coverage and rejects mismatches. Generated artifacts must target every requested output format exactly.\n")
+	b.WriteString("- No success without evidence because the adversarial review checks citation presence and rejects unsupported claims. Every major claim must cite source material or recorded implementation-decision evidence.\n")
 	if planning {
 		b.WriteString("- Implementation decisions are allowed only when source material is silent; mark them as implementation decisions and list validation proof.\n")
 	} else {
@@ -278,5 +278,17 @@ func normalizedOutputFormatNames(values []string) []string {
 }
 
 func outputOnlyMarkdown() string {
-	return "Output ONLY markdown. No preamble. No commentary. No wrapper text.\n\n"
+	return "Output markdown only. The caller writes your response to a file; non-markdown content will corrupt the artifact. No preamble. No commentary. No wrapper text.\n\n"
+}
+
+func constraintReminder() string {
+	return strings.Join([]string{
+		"REMINDER (these rules override everything above):",
+		"- Every claim must cite its source file. No citation = no claim.",
+		"- Missing facts become UNKNOWN. Never invent data, endpoints, or commands.",
+		"- Write the artifact body directly. No preamble, no commentary, no status notes.",
+		"- Embed data schemas inline for skills. Reference by citation for other artifacts.",
+		"- Each Process step must include failure handling and source citation.",
+		"",
+	}, "\n")
 }

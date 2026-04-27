@@ -71,6 +71,7 @@ func promptHeader(ir PromptIR, title string, planning bool) string {
 	b.WriteString(strictRules(planning))
 	b.WriteString(concisenessContract())
 	b.WriteString(outputOnlyMarkdown())
+	b.WriteString(constraintReminder())
 	return b.String()
 }
 
@@ -122,7 +123,7 @@ func artifactOutputContract(kind DraftKind) string {
 			"    4. For steps that produce intermediate state (e.g., classified alert, correlated group), mark as CHECKPOINT -- the agent should persist this state before proceeding so recovery can resume from here.",
 			"    5. End with the citation to the source that justifies this step.",
 			"  - Output Format: (name the data structure produced. List its fields with types. If the source provides an example payload, include it inline.)",
-			"  - Constraints: (split into MUST DO and MUST NOT. Derive each rule from a specific source requirement. Every constraint must cite its source. Include non-functional requirements like latency budgets, precision targets, availability, and security boundaries.)",
+			"  - Constraints: (split into Required and Prohibited, with a brief rationale for each rule. Derive each rule from a specific source requirement. Every constraint must cite its source. Include non-functional requirements like latency budgets, precision targets, availability, and security boundaries.)",
 			"  - UNKNOWN Gates: (for each gate: name the missing data, state which Process step(s) it blocks, and cite the source that implies the need but doesn't provide the answer.)",
 			"  - Evidence: (testable acceptance criteria -- not 'the output should be correct' but specific assertions like 'every emitted record has a non-empty reasoning_chain' or 'if zero contradictions found, flag as suspicious'. Each criterion must be verifiable without human judgment.)",
 			"",
@@ -136,7 +137,7 @@ func artifactOutputContract(kind DraftKind) string {
 			"- Do not invent catch-all filler skills.",
 			"",
 			"SKILL CONCISENESS OVERRIDE:",
-			"- Skills are the operational reference for the agent swarm. Unlike other .tasks files, skills MUST embed data schemas, JSON payloads, field tables, and config structures inline when the source provides them.",
+			"- Skills are the operational reference for the agent swarm. Unlike other .tasks files, skills need to embed data schemas, JSON payloads, field tables, and config structures inline when the source provides them, because the installed skill file is the agent's only reference at runtime.",
 			"- Do NOT reference these by citation alone -- the installed skill file must be self-contained so an agent can execute it without reading the original source.",
 			"- The conciseness contract still applies to prose: do not repeat the same claim across sections. But data structures belong inline in the Inputs Required or Output Format sections.",
 			"",

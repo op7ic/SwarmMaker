@@ -541,3 +541,122 @@ func TestAgentsSkillsPathFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestProgressiveDisclosureSplitsLargeSkill(t *testing.T) {
+	// Build a skill with >100 lines including Inputs Required and Constraints.
+	var body strings.Builder
+	body.WriteString("## When to Invoke\n\n- Trigger A\n- Trigger B\n\n")
+	body.WriteString("## Inputs Required\n\n")
+	for i := 1; i <= 30; i++ {
+		body.WriteString(fmt.Sprintf("- Field %d (string): description of field %d\n", i, i))
+	}
+	body.WriteString("\n## Process\n\n")
+	for i := 1; i <= 40; i++ {
+		body.WriteString(fmt.Sprintf("%d. Step %d: perform action %d with detailed explanation.\n", i, i, i))
+	}
+	body.WriteString("\n## Constraints\n\n### MUST DO\n")
+	for i := 1; i <= 15; i++ {
+		body.WriteString(fmt.Sprintf("- Constraint %d: always do this important thing.\n", i))
+	}
+	body.WriteString("\n### MUST NOT\n")
+	for i := 1; i <= 10; i++ {
+		body.WriteString(fmt.Sprintf("- Never do thing %d.\n", i))
+	}
+	body.WriteString("\n## Evidence\n\n- All steps completed.\n")
+
+	skill := Skill{
+		Name:    "LargeSkill",
+		Slug:    "large-skill",
+		Summary: "A very detailed skill for testing progressive disclosure",
+		Body:    body.String(),
+	}
+
+	split := BuildSkillSplit(skill)
+
+	if split.References == "" {
+		t.Fatal("expected references file for large skill, got empty")
+	}
+	if split.RefPath == "" {
+		t.Fatal("expected RefPath to be set")
+	}
+	if !strings.Contains(split.RefPath, "references/") {
+		t.Fatalf("RefPath should contain references/, got %q", split.RefPath)
+	}
+	if !strings.Contains(split.Main, "references/") {
+		t.Fatal("main content should contain link to references file")
+	}
+	if !strings.Contains(split.Main, "## Process") {
+		t.Fatal("main should contain Process section")
+	}
+	if strings.Contains(split.Main, "## Inputs Required") {
+		t.Fatal("main should NOT contain Inputs Required section (moved to references)")
+	}
+	if strings.Contains(split.Main, "## Constraints") {
+		t.Fatal("main should NOT contain Constraints section (moved to references)")
+	}
+	if !strings.Contains(split.References, "## Inputs Required") {
+		t.Fatal("references should contain Inputs Required section")
+	}
+	if !strings.Contains(split.References, "## Constraints") {
+		t.Fatal("references should contain Constraints section")
+	}
+}
+
+func TestProgressiveDisclosureNoSplitForSmallSkill(t *testing.T) {
+	skill := Skill{
+		Name:    "SmallSkill",
+		Slug:    "small-skill",
+		Summary: "A small skill",
+		Body:    "## Process\n\n1. Step one.\n2. Step two.\n",
+	}
+	split := BuildSkillSplit(skill)
+	if split.References != "" {
+		t.Fatal("expected no references for small skill")
+	}
+	if split.RefPath != "" {
+		t.Fatalf("expected empty RefPath, got %q", split.RefPath)
+	}
+}
+
+func TestDescriptionHasNonTrigger(t *testing.T) {
+	skill := Skill{
+		Name:    "Scoped",
+		Slug:    "scoped",
+		Summary: "Handle deployment tasks",
+		Body: `## When to Invoke
+
+- Deployment request arrives
+- Config change detected
+
+## Boundaries
+
+- Infrastructure provisioning
+- Database migrations
+
+## Process
+
+1. Validate config.
+2. Deploy.
+`,
+	}
+	desc := buildPushyDescription(skill)
+	if !strings.Contains(desc, "Do not use for") {
+		t.Fatalf("description should contain non-trigger 'Do not use for', got: %q", desc)
+	}
+	if len(desc) > 200 {
+		t.Fatalf("description length = %d, want <= 200: %q", len(desc), desc)
+	}
+}
+
+func TestDescriptionNonTriggerFromDoesNotPattern(t *testing.T) {
+	skill := Skill{
+		Name:    "Limited",
+		Slug:    "limited",
+		Summary: "Process alerts",
+		Body:    "This skill does not handle infrastructure changes.\n\n## Process\n\n1. Read alert.\n",
+	}
+	desc := buildPushyDescription(skill)
+	if !strings.Contains(desc, "Do not use for") {
+		t.Fatalf("description should contain non-trigger, got: %q", desc)
+	}
+}

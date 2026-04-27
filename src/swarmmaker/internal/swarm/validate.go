@@ -62,7 +62,7 @@ var dimRefRe = regexp.MustCompile(`(?i)(?:dimension|dim)\.?\s*#?\s*(\d+)`)
 var processStepRe = regexp.MustCompile(`(?m)(?:^\s*\d+\.\s|^#{1,3}\s*Process)`)
 
 // constraintRe matches constraint indicators in skills output.
-var constraintRe = regexp.MustCompile(`(?i)(?:MUST\s+DO|MUST\s+NOT|Constraints)`)
+var constraintRe = regexp.MustCompile(`(?i)(?:MUST\s+DO|MUST\s+NOT|Required|Prohibited|Constraints)`)
 
 // triggerRe matches invocation trigger patterns in skills output.
 var triggerRe = regexp.MustCompile(`(?i)(?:When\s+to\s+Invoke|trigger\s+condition)`)
@@ -81,7 +81,7 @@ var allCapsWordRe = regexp.MustCompile(`\b[A-Z]{5,}\b`)
 
 // allCapsWhitelist — ALL-CAPS words that are acceptable and should not be flagged.
 var allCapsWhitelist = map[string]bool{
-	"UNKNOWN": true, "OODA": true, "MUST": true, "NEVER": true,
+	"UNKNOWN": true, "OODA": true,
 	"API": true, "JSON": true, "HTTP": true, "HTTPS": true,
 	"HTML": true, "REST": true, "YAML": true, "UUID": true,
 	"ASCII": true, "UTF": true, "STDIN": true, "STDOUT": true,
@@ -315,7 +315,7 @@ func PreScreenFiles(outputDir string, criticalFiles []string, complexity *ingest
 					result.addAdvisory(f, "missing procedural steps (no numbered process found)")
 				}
 				if !constraintRe.MatchString(text) {
-					result.addAdvisory(f, "missing constraints (no MUST DO/MUST NOT/Constraints found)")
+					result.addAdvisory(f, "missing constraints (no Required/Prohibited/Constraints found)")
 				}
 				if !triggerRe.MatchString(text) {
 					result.addAdvisory(f, "missing trigger conditions (no When to Invoke found)")

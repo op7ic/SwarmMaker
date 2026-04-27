@@ -767,3 +767,17 @@ func TestCitationRegexMatchesBothSingularAndPlural(t *testing.T) {
 		}
 	}
 }
+
+func TestMustNotInWhitelist(t *testing.T) {
+	for _, word := range []string{"MUST", "NEVER"} {
+		if allCapsWhitelist[word] {
+			t.Errorf("%q should NOT be in allCapsWhitelist (V13: behavioral instructions must be detected)", word)
+		}
+	}
+	// Verify legitimate technical terms are still whitelisted
+	for _, word := range []string{"UNKNOWN", "OODA", "JSON", "HTTPS"} {
+		if !allCapsWhitelist[word] {
+			t.Errorf("%q should remain in allCapsWhitelist (technical term)", word)
+		}
+	}
+}

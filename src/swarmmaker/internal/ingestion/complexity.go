@@ -112,17 +112,17 @@ func (c *SourceComplexity) FormatHints() string {
 	b.WriteString(fmt.Sprintf("- Named sections/headings: %d\n", c.SectionCount))
 
 	if c.DimensionCount > 0 {
-		b.WriteString(fmt.Sprintf("- Numbered dimensions/modules: %d — YOUR OUTPUT MUST COVER ALL %d. Omitting any is a critical failure.\n",
+		b.WriteString(fmt.Sprintf("- Numbered dimensions/modules: %d — Cover all %d because the validation pipeline checks dimension coverage and flags gaps.\n",
 			c.DimensionCount, c.DimensionCount))
 	}
 	if c.AppendixCount > 0 {
-		b.WriteString(fmt.Sprintf("- Appendices: %d — you MUST reproduce or create tasks for EACH appendix.\n", c.AppendixCount))
+		b.WriteString(fmt.Sprintf("- Appendices: %d — Reproduce or create tasks for each appendix because the validation pipeline checks appendix coverage.\n", c.AppendixCount))
 	}
 	if c.NumericalDensity > 5.0 {
-		b.WriteString("- Source is NUMERICALLY DENSE. Preserve ALL specific numbers, thresholds, and formulas exactly as stated.\n")
+		b.WriteString("- Source is numerically dense. Preserve all specific numbers, thresholds, and formulas exactly as stated because the review checks numerical fidelity.\n")
 	}
 	if c.ListItemCount > 20 {
-		b.WriteString(fmt.Sprintf("- Source contains %d+ enumerated items. Do NOT summarize — preserve each one.\n", c.ListItemCount))
+		b.WriteString(fmt.Sprintf("- Source contains %d+ enumerated items. Preserve each one rather than summarizing because the review checks item coverage.\n", c.ListItemCount))
 	}
 
 	b.WriteString("\n")

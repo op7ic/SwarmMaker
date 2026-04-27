@@ -37,6 +37,7 @@ const (
 	maxRetries              = 3
 	minOutputLen            = 200 // minimum acceptable response length
 	promptSizeThreshold     = 100_000 // bytes; Linux MAX_ARG_STRLEN is 131072
+	maxPromptChars          = 400_000 // ~100K tokens; conservative limit for all providers
 )
 
 // ModelOverrides allows callers to specify lighter/faster models per tool.
@@ -63,6 +64,19 @@ type Executor struct {
 	sandboxAvailable bool
 }
 
+// ExecutorError classifies LLM invocation failures with a retryable flag
+// so the retry loop can make informed decisions instead of retrying blindly.
+type ExecutorError struct {
+	Code      string // TIMEOUT, REFUSAL, RATE_LIMIT, SHORT_OUTPUT, UNKNOWN
+	Message   string
+	Retryable bool
+	Guidance  string // what the caller should do differently
+}
+
+func (e *ExecutorError) Error() string {
+	return e.Message
+}
+
 // Response holds the output from an LLM invocation.
 type Response struct {
 	Tool            string
@@ -74,6 +88,8 @@ type Response struct {
 	FallbackReasons []string
 	Error           error
 	OutputFile      string // if the LLM wrote to a file, this is its path
+	InputTokens     int    // estimated from prompt length
+	OutputTokens    int    // estimated from output length
 }
 
 type fileSnapshot struct {
@@ -297,6 +313,8 @@ func (e *Executor) runToFileWithModel(tool discovery.LLMTool, prompt, outputFile
 			resp.Output = strings.TrimSpace(string(content))
 			resp.OutputFile = outputFile
 			resp.Retries = attempt
+			resp.InputTokens = len(filePrompt) / 4
+			resp.OutputTokens = len(resp.Output) / 4
 			return resp, nil
 		}
 
@@ -419,11 +437,17 @@ func (e *Executor) runWithRetry(tool discovery.LLMTool, prompt, role string) (*R
 		resp, err := e.run(tool, prompt, role, "")
 		lastResp = resp
 		if err == nil {
+			resp.InputTokens = len(prompt) / 4
+			resp.OutputTokens = len(resp.Output) / 4
 			if err := validateOutput(resp.Output, tool.Name); err != nil {
 				resp.Error = err
 				lastErr = err
 				if e.Verbose {
 					fmt.Printf("  [%s] Output validation failed: %v\n", tool.Name, err)
+				}
+				// Stop retrying non-retryable errors
+				if execErr, ok := err.(*ExecutorError); ok && !execErr.Retryable {
+					break
 				}
 				continue
 			}
@@ -431,6 +455,10 @@ func (e *Executor) runWithRetry(tool discovery.LLMTool, prompt, role string) (*R
 			return resp, nil
 		}
 		lastErr = err
+		// Stop retrying non-retryable errors
+		if execErr, ok := err.(*ExecutorError); ok && !execErr.Retryable {
+			break
+		}
 	}
 
 	if lastResp != nil && lastResp.Error == nil {
@@ -444,6 +472,11 @@ func (e *Executor) run(tool discovery.LLMTool, prompt, role, outputFile string) 
 }
 
 func (e *Executor) runWithModel(tool discovery.LLMTool, prompt, role, outputFile, modelOverride string) (*Response, error) {
+	if len(prompt) > maxPromptChars {
+		err := fmt.Errorf("prompt exceeds maximum size (%d chars > %d max). Reduce source material or split into smaller runs", len(prompt), maxPromptChars)
+		return &Response{Tool: tool.Name, Prompt: prompt, Error: err}, err
+	}
+
 	if e.Verbose {
 		fmt.Printf("  [%s] Sending prompt (%d chars)...\n", tool.Name, len(prompt))
 	}
@@ -577,6 +610,8 @@ func (e *Executor) runWithModel(tool discovery.LLMTool, prompt, role, outputFile
 			}
 
 			resp.Output = strings.TrimSpace(stdout.String())
+			resp.InputTokens = len(prompt) / 4
+			resp.OutputTokens = len(resp.Output) / 4
 
 			if e.Verbose {
 				fmt.Printf("  [%s] Response received (%d chars, %v)\n",
@@ -635,21 +670,51 @@ func buildEnv(tool discovery.LLMTool, role, model, outputFile string) []string {
 }
 
 // validateOutput checks that LLM output meets minimum quality thresholds.
+// Returns an *ExecutorError with classification and retryable flag.
 func validateOutput(output, toolName string) error {
 	if len(output) < minOutputLen {
-		return fmt.Errorf("%s returned suspiciously short output (%d chars, minimum %d)",
-			toolName, len(output), minOutputLen)
+		return &ExecutorError{
+			Code:      "SHORT_OUTPUT",
+			Message:   fmt.Sprintf("%s returned suspiciously short output (%d chars, minimum %d)", toolName, len(output), minOutputLen),
+			Retryable: true,
+			Guidance:  "LLM may have truncated; retry",
+		}
 	}
 	lower := strings.ToLower(output)
+
+	rateLimitPatterns := []string{"rate limit", "quota exceeded"}
+	for _, pattern := range rateLimitPatterns {
+		if strings.Contains(lower, pattern) && len(output) < 500 {
+			return &ExecutorError{
+				Code:      "RATE_LIMIT",
+				Message:   fmt.Sprintf("%s returned rate limit error: %.100s...", toolName, output),
+				Retryable: true,
+				Guidance:  "wait and retry with backoff",
+			}
+		}
+	}
+
 	refusalPatterns := []string{
 		"i cannot", "i'm unable", "i am unable",
 		"as an ai", "i don't have access",
-		"error:", "rate limit", "quota exceeded",
 	}
 	for _, pattern := range refusalPatterns {
 		if strings.Contains(lower, pattern) && len(output) < 500 {
-			return fmt.Errorf("%s appears to have returned an error or refusal: %.100s...",
-				toolName, output)
+			return &ExecutorError{
+				Code:      "REFUSAL",
+				Message:   fmt.Sprintf("%s appears to have returned a refusal: %.100s...", toolName, output),
+				Retryable: false,
+				Guidance:  "rephrase prompt to avoid safety filters",
+			}
+		}
+	}
+
+	if strings.Contains(lower, "error:") && len(output) < 500 {
+		return &ExecutorError{
+			Code:      "UNKNOWN",
+			Message:   fmt.Sprintf("%s appears to have returned an error: %.100s...", toolName, output),
+			Retryable: true,
+			Guidance:  "check provider status and retry",
 		}
 	}
 	return nil
@@ -775,23 +840,29 @@ func describeOutputFileState(outputFile string) string {
 	return fmt.Sprintf("output file %s currently %d bytes", outputFile, info.Size())
 }
 
-func classifyTimeout(toolName string, timeout time.Duration, outputFile, combined string) error {
+func classifyTimeout(toolName string, timeout time.Duration, outputFile, combined string) *ExecutorError {
 	outputState := describeOutputFileState(outputFile)
 	snippet := timeoutSnippet(combined)
+	var msg string
 	if toolName == "codex" && containsInteractiveInputWait(combined) {
-		if snippet != "" {
-			return fmt.Errorf("%s timed out after %v while still waiting on additional stdin or interactive input (%s). stdin is configured to be closed; this points to a Codex CLI/runtime hang or interactive fallback. Output snippet: %s",
-				toolName, timeout, outputState, snippet)
-		}
-		return fmt.Errorf("%s timed out after %v while still waiting on additional stdin or interactive input (%s). stdin is configured to be closed; this points to a Codex CLI/runtime hang or interactive fallback",
+		msg = fmt.Sprintf("%s timed out after %v while still waiting on additional stdin or interactive input (%s). stdin is configured to be closed; this points to a Codex CLI/runtime hang or interactive fallback",
 			toolName, timeout, outputState)
+		if snippet != "" {
+			msg += ". Output snippet: " + snippet
+		}
+	} else {
+		msg = fmt.Sprintf("%s timed out after %v before completing the output contract (%s). This indicates provider latency or a hung CLI invocation",
+			toolName, timeout, outputState)
+		if snippet != "" {
+			msg += ". Output snippet: " + snippet
+		}
 	}
-	if snippet != "" {
-		return fmt.Errorf("%s timed out after %v before completing the output contract (%s). This indicates provider latency or a hung CLI invocation. Output snippet: %s",
-			toolName, timeout, outputState, snippet)
+	return &ExecutorError{
+		Code:      "TIMEOUT",
+		Message:   msg,
+		Retryable: true,
+		Guidance:  "increase timeout or reduce prompt size",
 	}
-	return fmt.Errorf("%s timed out after %v before completing the output contract (%s). This indicates provider latency or a hung CLI invocation",
-		toolName, timeout, outputState)
 }
 
 func containsInteractiveInputWait(text string) bool {

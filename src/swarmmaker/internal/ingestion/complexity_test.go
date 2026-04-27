@@ -145,14 +145,14 @@ func TestFormatHintsDeepSource(t *testing.T) {
 
 	required := []string{
 		"70000 characters",
-		"25",                // sections
-		"20",                // dimensions
-		"MUST COVER ALL 20", // ADR: forces coverage
-		"3",                 // appendices
-		"EACH appendix",     // ADR: forces appendix coverage
-		"NUMERICALLY DENSE", // ADR: preserves numbers
-		"150+",              // list items
-		"Do NOT summarize",  // ADR: prevents collapse
+		"25",                        // sections
+		"20",                        // dimensions
+		"Cover all 20",              // forces coverage
+		"3",                         // appendices
+		"each appendix",             // forces appendix coverage
+		"numerically dense",         // preserves numbers
+		"150+",                      // list items
+		"Preserve each one rather than summarizing", // prevents collapse
 	}
 	for _, r := range required {
 		if !strings.Contains(hints, r) {
@@ -175,13 +175,13 @@ func TestFormatHintsShallowSource(t *testing.T) {
 	hints := c.FormatHints()
 
 	// Shallow source should NOT contain dimension/appendix/density warnings
-	if strings.Contains(hints, "MUST COVER ALL") {
+	if strings.Contains(hints, "Cover all") {
 		t.Error("FormatHints should not mention dimensions for shallow source")
 	}
 	if strings.Contains(hints, "appendix") {
 		t.Error("FormatHints should not mention appendices for shallow source")
 	}
-	if strings.Contains(hints, "NUMERICALLY DENSE") {
+	if strings.Contains(hints, "numerically dense") {
 		t.Error("FormatHints should not warn about density for low-density source")
 	}
 }
