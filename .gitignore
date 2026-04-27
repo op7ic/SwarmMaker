@@ -1,1 +1,27 @@
+# Reference material and scratch
 .idea/
+
+# Test artifacts
+/testoutput/
+/testinput/
+
+# Build artifacts
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Editor/IDE
+.vscode/
+*.swp
+*.swo
+*~
+
+# Compiled test harnesses
+e2e_harness
+/testoutput_codex
+/testoutput_claude
