@@ -722,6 +722,18 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 						return failValidation(fmt.Errorf("%d targeted revision(s) failed in round %d", failedRevisions, round))
 					}
 
+					// Repair citation path hallucinations before re-checking.
+					// LLMs occasionally mangle directory paths while keeping filenames correct.
+					knownCitationPaths := buildKnownCitationPaths(absPath, absOutput)
+					for _, f := range allFiles {
+						fPath := filepath.Join(absOutput, f)
+						if n, err := repairCitationPaths(fPath, knownCitationPaths); err == nil && n > 0 {
+							if verbose {
+								fmt.Printf("  [repair] Fixed %d citation path(s) in %s\n", n, f)
+							}
+						}
+					}
+
 					// Post-revision programmatic re-check (0 LLM calls).
 					postIssues := validateDraftProgrammatic(absOutput, allFiles, absOutput, absPath)
 					report.programmatic = postIssues
@@ -734,9 +746,9 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 					postScreen := swarm.PreScreenFiles(absOutput, criticalFiles, complexity, ingested.Summary)
 					report.postScreen = postScreen
 
-					if !postScreen.NeedsLLMReview {
-						green.Printf("  Post-revision re-screen (round %d): all clear\n", round)
-						break // All flags cleared.
+					if !postScreen.HasConcreteFlags() {
+						green.Printf("  Post-revision re-screen (round %d): all concrete flags cleared\n", round)
+						break // All concrete flags cleared. Advisory-only flags don't block.
 					}
 
 					currentFlagCount := len(postScreen.FlaggedFiles())
@@ -762,10 +774,11 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 					previousFlagCount = currentFlagCount
 				}
 
-				// After the loop, check if flags still remain.
-				if report.postScreen != nil && report.postScreen.NeedsLLMReview {
-					return failValidation(fmt.Errorf("post-revision pre-screen still has %d flag(s) after %d revision round(s)",
-						len(report.postScreen.Reasons), revisionRoundCount(report.revisions)))
+				// After the loop, check if CONCRETE flags still remain.
+				// Advisory-only findings (anti-pattern checks) should not block the build.
+				if report.postScreen != nil && report.postScreen.HasConcreteFlags() {
+					return failValidation(fmt.Errorf("post-revision pre-screen still has %d concrete flag(s) after %d revision round(s)",
+						len(report.postScreen.FlaggedFiles()), revisionRoundCount(report.revisions)))
 				}
 			}
 		}
@@ -1792,4 +1805,66 @@ func selectLLMs(tools []discovery.LLMTool) (discovery.LLMTool, discovery.LLMTool
 		return primary, critic, []string{fmt.Sprintf("same-model critique explicitly requested: %q", primary.Name)}, nil
 	}
 	return primary, critic, nil, nil
+}
+
+// repairCitationPaths fixes near-miss citation path hallucinations in generated
+// files. LLMs occasionally truncate or mangle directory paths while keeping the
+// filename correct (e.g., /mnt/d/function/file.md instead of /mnt/d/github/SwarmMaker/file.md).
+// This function replaces any markdown link target whose basename matches a known
+// source file but whose full path is wrong.
+func repairCitationPaths(filePath string, knownPaths []string) (int, error) {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0, err
+	}
+
+	// Build a map: basename -> correct full path
+	byBasename := make(map[string]string, len(knownPaths))
+	for _, p := range knownPaths {
+		base := filepath.Base(p)
+		byBasename[base] = p
+	}
+
+	linkRe := regexp.MustCompile(`\]\(([^)]+)\)`)
+	repaired := 0
+	result := linkRe.ReplaceAllStringFunc(string(content), func(match string) string {
+		sub := linkRe.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		target := sub[1]
+		base := filepath.Base(target)
+		if correct, ok := byBasename[base]; ok && target != correct {
+			repaired++
+			return "]("+correct+")"
+		}
+		return match
+	})
+
+	if repaired > 0 {
+		if err := os.WriteFile(filePath, []byte(result), 0644); err != nil {
+			return repaired, err
+		}
+	}
+	return repaired, nil
+}
+
+// buildKnownCitationPaths returns the set of absolute paths that are valid
+// citation targets: source input files + evidence.json + manifest.json.
+func buildKnownCitationPaths(inputDir, outputDir string) []string {
+	var paths []string
+	// Source files from input directory
+	_ = filepath.Walk(inputDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		paths = append(paths, filepath.Clean(path))
+		return nil
+	})
+	// Evidence and manifest in output
+	for _, name := range []string{"evidence.json", "manifest.json"} {
+		p := filepath.Join(outputDir, ".tasks", name)
+		paths = append(paths, filepath.Clean(p))
+	}
+	return paths
 }

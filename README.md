@@ -27,7 +27,7 @@ graph LR
 | 1. Ingest | 0 | Source folder | Evidence manifest, complexity analysis | Missing/unreadable files recorded, not hidden; basic sanity gate rejects empty dirs |
 | 2. IR Emit | 0 | Ingestion output + routing | 7 JSON artifacts under `.tasks/ir/` | Contract validation rejects malformed schemas |
 | 2.5 Pre-flight | 1 | Summary + complexity metrics | SUFFICIENT/INSUFFICIENT verdict | Rejects material too thin for skill decomposition (~$0.01) |
-| 3. Generate | 9 (parallelizable) | Compiled prompts + source | 9 `.tasks/` ledger files | Per-task retry with backoff; min-length enforcement |
+| 3. Generate | 9 (two-phase) | Compiled prompts + source | 9 `.tasks/` ledger files | Phase A (context+tasks) then Phase B (7 dependent files with ledger context); per-task retry with backoff |
 | 4. Validate | 1-10 | Generated ledger | Validation report | Multi-round: programmatic → pre-screen → adversarial review → revision (up to 3 rounds) → post-screen |
 | 5. Render | 0 | Validated ledger | Platform trees + README + installer | Atomic staged write; parity check across targets |
 
@@ -37,7 +37,11 @@ The pipeline starts by walking the input folder and recording evidence for every
 
 Seven versioned JSON artifacts are emitted to `.tasks/ir/` -- product definition, source IR, provider capabilities, routing decision, output tree spec, tool synthesis request, and prompt IR with redacted source material. These form the auditable intermediate representation.
 
-The swarm engine then compiles 9 prompts from the IR and source material and executes them concurrently (or serially for same-provider) with round-robin assignment across available LLMs. Each task produces one `.tasks/` ledger file. After generation, the validation pipeline runs (see below), and on success the renderer compiles the validated ledger into platform-specific output trees.
+Before generation, a pre-flight LLM call (~$0.01) evaluates whether the source material is rich enough to decompose into skills. If insufficient, the run exits with a specific explanation of what's missing, saving 9+ expensive generation calls.
+
+Generation runs in two phases. Phase A produces the foundational files (context.md, tasks.md) first. Phase B then generates the remaining 7 files with a summary of Phase A output injected into their prompts, ensuring cross-file consistency from the start rather than catching contradictions only in review. Tasks within each phase run concurrently (or serially for same-provider) with round-robin assignment across available LLMs.
+
+After generation, the validation pipeline runs (see below). After each revision round, a citation path repair step fixes near-miss path hallucinations where the LLM mangled a directory path but kept the filename correct (e.g., `/mnt/d/function/` instead of `/mnt/d/github/SwarmMaker/`). On success, the renderer compiles the validated ledger into platform-specific output trees plus the cross-platform `.agents/skills/` standard path.
 
 ```mermaid
 graph TD
@@ -51,8 +55,9 @@ graph TD
     ROUTE -->|routing decision| IR
     IR -->|1 short LLM call| PREFLIGHT{"Pre-flight<br/>Validation<br/>(~$0.01)"}
     PREFLIGHT -->|INSUFFICIENT| REJECT2["Reject<br/>LLM explains what<br/>is missing"]
-    PREFLIGHT -->|SUFFICIENT| SWARM["Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
-    SWARM -->|9 ledger files| VALID{"Validate<br/>6-layer gate"}
+    PREFLIGHT -->|SUFFICIENT| PHASE_A["Phase A<br/>context.md + tasks.md<br/>(foundational)"]
+    PHASE_A --> PHASE_B["Phase B<br/>7 dependent files<br/>(with ledger context)"]
+    PHASE_B -->|9 ledger files| VALID{"Validate<br/>6-layer gate"}
     VALID -->|pass| RENDER["Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
     VALID -->|fail| REPORT["validation-report.md<br/>(always written)"]
 ```
@@ -98,7 +103,7 @@ Measured on a real 4-file input (10KB source material) producing a codex skill b
 | Output size (skills.md) | ~62 KB | ~88 KB | Varies by generator |
 | Skill count | ~11 | ~10 | Varies by generator |
 
-Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and MUST/MUST NOT constraints.
+Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and Required/Prohibited constraints. The validation report includes a cost estimate (total LLM calls, estimated tokens, approximate dollar cost).
 
 Scaling: generation time is O(N) in task count (currently fixed at 9). Prompt size is O(S) in source material size. Revision rounds are bounded at 3 with regression detection.
 
@@ -205,7 +210,9 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
       index.md
       <skill-slug>.md ...
   README.md                        # Bundle readme
+  REVIEW_CHECKLIST.md              # Human review checklist before deploying
   install.sh                       # Installer (--target, --global)
+  .gitignore                       # Excludes debug artifacts from git
 ```
 
 `.agents/skills/` is the cross-platform standard path. Every skill is emitted here in addition to the platform-specific tree, using YAML frontmatter (`name`, `description`) for discovery by skill loaders.
@@ -213,6 +220,8 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
 ## Validation Pipeline
 
 Every generated ledger passes through six validation layers before output is written. No layer can be skipped.
+
+Source material is scanned for prompt injection patterns (e.g., "ignore previous instructions") during ingestion. Detected patterns are recorded as evidence events and flagged in the validation report for human review -- content is never silently modified.
 
 The pipeline starts with zero-LLM-cost programmatic checks: file existence, minimum sizes, markdown link integrity, template leak detection (16 known patterns that LLMs might copy from prompt instructions), and meta-commentary filtering (rejecting outputs that describe what they did instead of producing the artifact).
 
