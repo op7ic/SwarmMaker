@@ -495,74 +495,91 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	green.Printf("  Detailed IR: %s\n", artifactPaths.ManifestPath)
 	fmt.Println()
 
-	// Pre-flight source validation: one short LLM call to judge whether the
-	// source material is rich enough to produce useful agent skills. Costs ~$0.01
-	// to potentially save 9+ expensive generation calls ($1-5) on garbage input.
-	bold.Println("[Pre-flight] Validating source material sufficiency...")
-	if err := runPreFlightValidation(exec, ingested, complexity); err != nil {
-		return err
-	}
-	green.Println("  Source material: SUFFICIENT")
-	fmt.Println()
-
-	// Phase 3: Run task-ledger generation in two phases.
-	// Phase A generates foundational files (context.md, tasks.md).
-	// Phase B uses a summary of Phase A output as ledger context for the remaining 7 files.
-	sw := swarm.New(exec, absOutput, verbose)
-	bold.Printf("[3/5] Running task-ledger generation swarm (%d agents, concurrency %d)...\n", len(ledgerFiles), sw.Concurrency)
-
-	// Phase A: foundational files
-	phaseATasks, err := swarm.BuildPhaseATasks(promptIR, sourceHints, promptPack)
-	if err != nil {
-		return fmt.Errorf("building phase A prompts: %w", err)
-	}
-	fmt.Println("  Phase A: generating foundational files (context.md, tasks.md)...")
-	phaseAResults := sw.Run(phaseATasks)
-	if failures := swarm.Failures(phaseAResults); len(failures) > 0 {
-		red.Printf("  %d/%d phase A tasks failed, aborting\n", len(failures), len(phaseATasks))
-		for _, f := range failures {
-			red.Printf("    x %s: %v\n", f.Task.Name, f.Error)
+	// Pre-flight, Phase 3, and post-generation evidence scan are skipped
+	// when incremental regeneration detects unchanged source content.
+	var swarmLLMCalls, swarmInputTokens, swarmOutputTokens int
+	if !incrementalSkip {
+		// Pre-flight source validation: one short LLM call to judge whether the
+		// source material is rich enough to produce useful agent skills. Costs ~$0.01
+		// to potentially save 9+ expensive generation calls ($1-5) on garbage input.
+		bold.Println("[Pre-flight] Validating source material sufficiency...")
+		if err := runPreFlightValidation(exec, ingested, complexity); err != nil {
+			return err
 		}
-		return fmt.Errorf("%d/%d phase A swarm tasks failed", len(failures), len(phaseATasks))
-	}
-	green.Printf("  Phase A: %d/%d foundational files completed\n", swarm.SuccessCount(phaseAResults), len(phaseATasks))
+		green.Println("  Source material: SUFFICIENT")
+		fmt.Println()
 
-	// Build ledger context summary from Phase A outputs
-	ledgerContext := buildLedgerContext(absOutput)
+		// Phase 3: Run task-ledger generation in two phases.
+		// Phase A generates foundational files (context.md, tasks.md).
+		// Phase B uses a summary of Phase A output as ledger context for the remaining 7 files.
+		sw := swarm.New(exec, absOutput, verbose)
+		bold.Printf("[3/5] Running task-ledger generation swarm (%d agents, concurrency %d)...\n", len(ledgerFiles), sw.Concurrency)
 
-	// Phase B: dependent files with ledger context
-	phaseBTasks, err := swarm.BuildPhaseBTasks(promptIR, sourceHints, promptPack, ledgerContext)
-	if err != nil {
-		return fmt.Errorf("building phase B prompts: %w", err)
-	}
-	fmt.Println("  Phase B: generating dependent files with ledger context...")
-	phaseBResults := sw.Run(phaseBTasks)
-	if failures := swarm.Failures(phaseBResults); len(failures) > 0 {
-		red.Printf("  %d/%d phase B tasks failed, aborting\n", len(failures), len(phaseBTasks))
-		for _, f := range failures {
-			red.Printf("    x %s: %v\n", f.Task.Name, f.Error)
+		// Phase A: foundational files
+		phaseATasks, err := swarm.BuildPhaseATasks(promptIR, sourceHints, promptPack)
+		if err != nil {
+			return fmt.Errorf("building phase A prompts: %w", err)
 		}
-		return fmt.Errorf("%d/%d phase B swarm tasks failed", len(failures), len(phaseBTasks))
-	}
-
-	total := len(phaseATasks) + len(phaseBTasks)
-	successes := swarm.SuccessCount(phaseAResults) + swarm.SuccessCount(phaseBResults)
-	green.Printf("  %d/%d tasks completed (two-phase)\n", successes, total)
-	fmt.Println()
-
-	// -------------------------------------------------------
-	// Post-generation evidence scan: count implementation decisions
-	// -------------------------------------------------------
-	planningFiles := []string{".tasks/todo.md", ".tasks/skills.md", ".tasks/agents.md"}
-	implDecisionEvidence := scanImplementationDecisions(absOutput, planningFiles)
-	if len(implDecisionEvidence) > 0 {
-		if err := rewriteEvidenceManifest(tasksDir, ingested, implDecisionEvidence); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: failed to update evidence.json with implementation decisions: %v\n", err)
-		} else {
-			// Update the promptIR evidence count so phase 4 sees the correct value
-			promptIR.EvidenceEventCount = len(ingested.Evidence)
-			green.Printf("  Evidence: %d implementation decision events recorded\n", len(implDecisionEvidence))
+		fmt.Println("  Phase A: generating foundational files (context.md, tasks.md)...")
+		phaseAResults := sw.Run(phaseATasks)
+		if failures := swarm.Failures(phaseAResults); len(failures) > 0 {
+			red.Printf("  %d/%d phase A tasks failed, aborting\n", len(failures), len(phaseATasks))
+			for _, f := range failures {
+				red.Printf("    x %s: %v\n", f.Task.Name, f.Error)
+			}
+			return fmt.Errorf("%d/%d phase A swarm tasks failed", len(failures), len(phaseATasks))
 		}
+		green.Printf("  Phase A: %d/%d foundational files completed\n", swarm.SuccessCount(phaseAResults), len(phaseATasks))
+
+		// Build ledger context summary from Phase A outputs
+		ledgerContext := buildLedgerContext(absOutput)
+
+		// Phase B: dependent files with ledger context
+		phaseBTasks, err := swarm.BuildPhaseBTasks(promptIR, sourceHints, promptPack, ledgerContext)
+		if err != nil {
+			return fmt.Errorf("building phase B prompts: %w", err)
+		}
+		fmt.Println("  Phase B: generating dependent files with ledger context...")
+		phaseBResults := sw.Run(phaseBTasks)
+		if failures := swarm.Failures(phaseBResults); len(failures) > 0 {
+			red.Printf("  %d/%d phase B tasks failed, aborting\n", len(failures), len(phaseBTasks))
+			for _, f := range failures {
+				red.Printf("    x %s: %v\n", f.Task.Name, f.Error)
+			}
+			return fmt.Errorf("%d/%d phase B swarm tasks failed", len(failures), len(phaseBTasks))
+		}
+
+		total := len(phaseATasks) + len(phaseBTasks)
+		successes := swarm.SuccessCount(phaseAResults) + swarm.SuccessCount(phaseBResults)
+		green.Printf("  %d/%d tasks completed (two-phase)\n", successes, total)
+		fmt.Println()
+
+		// -------------------------------------------------------
+		// Post-generation evidence scan: count implementation decisions
+		// -------------------------------------------------------
+		planningFiles := []string{".tasks/todo.md", ".tasks/skills.md", ".tasks/agents.md"}
+		implDecisionEvidence := scanImplementationDecisions(absOutput, planningFiles)
+		if len(implDecisionEvidence) > 0 {
+			if err := rewriteEvidenceManifest(tasksDir, ingested, implDecisionEvidence); err != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: failed to update evidence.json with implementation decisions: %v\n", err)
+			} else {
+				// Update the promptIR evidence count so phase 4 sees the correct value
+				promptIR.EvidenceEventCount = len(ingested.Evidence)
+				green.Printf("  Evidence: %d implementation decision events recorded\n", len(implDecisionEvidence))
+			}
+		}
+
+		// Estimate cost from swarm generation tasks (v1: rough char/4 estimate)
+		for _, t := range append(phaseATasks, phaseBTasks...) {
+			swarmInputTokens += len(t.Prompt) / 4
+		}
+		for _, r := range append(phaseAResults, phaseBResults...) {
+			swarmOutputTokens += len(r.Content) / 4
+		}
+		swarmLLMCalls = len(phaseATasks) + len(phaseBTasks)
+	} else {
+		bold.Println("[3/5] Skipped -- source unchanged, reusing existing ledger files")
+		fmt.Println()
 	}
 
 	// -------------------------------------------------------
@@ -571,7 +588,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	//
 	// Call budget reasoning:
 	//
-	// Phase 3: 9 task-ledger generation calls
+	// Phase 3: 9 task-ledger generation calls (skipped on incremental reuse)
 	// Phase 4: 1-4 calls (adversarial review always runs; revision is gated)
 	//
 	// How the gate works:
@@ -584,18 +601,6 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	// Total pipeline: 8-11 calls depending on critique/revision outcome.
 	//
 	bold.Println("[4/5] Validating...")
-	// Estimate cost from swarm generation tasks (v1: rough char/4 estimate)
-	allTasks := append(phaseATasks, phaseBTasks...)
-	allResults := append(phaseAResults, phaseBResults...)
-	swarmLLMCalls := len(allTasks)
-	swarmInputTokens := 0
-	swarmOutputTokens := 0
-	for _, t := range allTasks {
-		swarmInputTokens += len(t.Prompt) / 4
-	}
-	for _, r := range allResults {
-		swarmOutputTokens += len(r.Content) / 4
-	}
 
 	report := &validationReport{
 		complexity:       complexity,
