@@ -32,6 +32,12 @@ graph LR
 
 ### Data Flow
 
+The pipeline starts by walking the input folder and recording evidence for every file decision (read, skipped as binary, hidden, oversized, noise directory, symlink, or unreadable). It then scans PATH for installed LLM CLIs and probes their capabilities and versions. The routing module assigns generator, critic, and renderer roles based on user flags and available providers, logging any fallback (e.g., same-model critique when only one provider is installed).
+
+Seven versioned JSON artifacts are emitted to `.tasks/ir/` -- product definition, source IR, provider capabilities, routing decision, output tree spec, tool synthesis request, and prompt IR with redacted source material. These form the auditable intermediate representation.
+
+The swarm engine then compiles 9 prompts from the IR and source material and executes them concurrently (or serially for same-provider) with round-robin assignment across available LLMs. Each task produces one `.tasks/` ledger file. After generation, the validation pipeline runs (see below), and on success the renderer compiles the validated ledger into platform-specific output trees.
+
 ```mermaid
 graph TD
     SRC["Source Folder<br/>(loose docs)"] --> INGEST["[1] Ingest<br/>Walk files, record evidence,<br/>analyze complexity"]
