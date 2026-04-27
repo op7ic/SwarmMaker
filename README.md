@@ -8,28 +8,12 @@ Translating loose human knowledge (notes, API docs, specs, scratch files) into s
 
 SwarmMaker automates this as a **two-stage compiler**:
 
-```
-  ┌──────────────────┐       ┌──────────────────────┐       ┌──────────────────────┐
-  │                  │       │      STAGE 1          │       │      STAGE 2         │
-  │   Loose Docs     │       │    (LLM-backed)       │       │   (deterministic)    │
-  │                  │       │                      │       │                      │
-  │  - notes.md      │       │  .tasks/ ledger       │       │  .claude/            │
-  │  - api_docs.md   │──────>│                      │──────>│  .codex/             │
-  │  - specs.md      │       │  - 9 ledger files    │       │  .gemini/            │
-  │  - scratch.txt   │       │  - 7 IR artifacts    │       │  README.md           │
-  │  - ...           │       │  - evidence.json     │       │  install.sh          │
-  │                  │       │  - validation report  │       │                      │
-  └──────────────────┘       └──────────────────────┘       └──────────────────────┘
-                                       │
-                              ┌────────┴────────┐
-                              │   Validation    │
-                              │                 │
-                              │  Programmatic   │
-                              │  Pre-screen     │
-                              │  Adversarial    │
-                              │  Revision (x3)  │
-                              │  Parity check   │
-                              └─────────────────┘
+```mermaid
+graph LR
+    A["Loose Docs<br/>notes.md, api_docs.md,<br/>specs.md, scratch.txt"] -->|Stage 1<br/>LLM-backed| B[".tasks/ ledger<br/>9 ledger files<br/>7 IR artifacts<br/>evidence.json<br/>validation report"]
+    B -->|Stage 2<br/>deterministic| C[".claude/<br/>.codex/<br/>.gemini/<br/>README.md<br/>install.sh"]
+    B --> D{"Validation<br/>Programmatic<br/>Pre-screen<br/>Adversarial<br/>Revision x3<br/>Parity check"}
+    D -->|pass| C
 ```
 
 **Stage 1** uses LLM calls to decompose source material into a shared `.tasks/` ledger with per-claim citations. **Stage 2** is a deterministic, LLM-free render from that ledger into platform-specific output trees. The expensive work happens once; rendering to N targets is a transform.
@@ -48,54 +32,17 @@ SwarmMaker automates this as a **two-stage compiler**:
 
 ### Data Flow
 
-```
-┌─────────────┐
-│Source Folder│
-│ (loose docs)│
-└──────┬──────┘
-       │
-       v
-┌──────────────┐    ┌───────────────┐    ┌───────────────┐
-│  [1] Ingest  │───>│ [2] Discover  │───>│  [3] Route    │
-│              │    │               │    │               │
-│ Walk files   │    │ Scan PATH for │    │ Assign roles: │
-│ Record       │    │ claude, codex,│    │ generator,    │
-│ evidence     │    │ gemini CLIs   │    │ critic,       │
-│ Analyze      │    │ Probe caps +  │    │ renderer      │
-│ complexity   │    │ versions      │    │ Log fallbacks │
-└──────┬───────┘    └───────────────┘    └───────┬───────┘
-       │                                         │
-       v                                         v
-┌──────────────┐                        ┌────────────────┐
-│  [4] IR Emit │                        │  [5] Swarm     │
-│              │                        │                │
-│7 versioned   │                        │ 9 tasks run    │
-│JSON artifacts│──────────────────────>│ concurrently   │
-│              │   (prompts compiled    │ (round-robin   │
-│ .tasks/ir/   │    from IR + source)   │  across LLMs)  │
-└──────────────┘                        └───────┬────────┘
-                                                │
-                                                v
-                                     ┌─────────────────────┐
-                                     │  [6] Validate       │
-                                     │                     │
-                                     │  Programmatic ──┐   │
-                                     │  Pre-screen  ───┤   │
-                                     │  Adversarial ───┤   │
-                                     │  Revision x3 ───┤   │
-                                     │  Post-screen ───┤   │
-                                     │  Parity check ──┘   │
-                                     └─────────┬───────────┘
-                                               │
-                                               v
-                                     ┌─────────────────────┐
-                                     │  [7] Render         │
-                                     │                     │
-                                     │  .claude/  .codex/  │
-                                     │  .gemini/           │
-                                     │  README.md          │
-                                     │  install.sh         │
-                                     └─────────────────────┘
+```mermaid
+graph TD
+    SRC["Source Folder<br/>(loose docs)"] --> INGEST["[1] Ingest<br/>Walk files, record evidence,<br/>analyze complexity"]
+    SRC --> DISC["[2] Discover<br/>Scan PATH for<br/>claude, codex, gemini"]
+    DISC --> ROUTE["[3] Route<br/>Assign generator, critic,<br/>renderer roles"]
+    INGEST --> IR["[4] IR Emit<br/>7 versioned JSON artifacts<br/>under .tasks/ir/"]
+    ROUTE --> IR
+    IR -->|prompts compiled<br/>from IR + source| SWARM["[5] Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
+    SWARM --> VALID{"[6] Validate<br/>Programmatic<br/>Pre-screen<br/>Adversarial review<br/>Revision (max 3)<br/>Post-screen<br/>Parity check"}
+    VALID -->|pass| RENDER["[7] Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
+    VALID -->|fail| REPORT["validation-report.md<br/>(always written)"]
 ```
 
 ### Agent Decomposition Model
@@ -255,68 +202,17 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
 
 ## Validation Pipeline
 
-```
-┌──────────────────────┐
-│  Generated Ledger    │
-│  (9 .tasks/ files)   │
-└──────────┬───────────┘
-           │
-           v
-┌──────────────────────────────────────────────────────────┐
-│  Programmatic Checks (0 LLM calls)                      │
-│  - File existence + minimum size                        │
-│  - Markdown link integrity                              │
-│  - Template leak detection (16 patterns)                │
-│  - Meta-commentary filtering                            │
-└─────��────┬────────────���───────────────────────────���──────┘
-           │
-           v
-��──────────────────────────────────────────────────────────┐
-│  Pre-Screen Gate (0 LLM calls)                          │
-��  - Citation density (sub-linear scaling by doc length)   │
-│  - Fabrication pattern detection                        │
-│  - Boilerplate injection detection                      │
-│  - Amplification ratio check                            │
-│  - Dimension coverage (deep sources only)               │
-│  Thresholds adapt to source depth: shallow/moderate/deep │
-└──────────┬───────────────────────────────────────────��───┘
-           │
-           v
-┌─────────────���────────────────────────────────────────────┐
-│  Adversarial LLM Review (1 LLM call)                    ��
-│  - Cross-file consistency                               │
-│  - Source fidelity (fabrication, missing coverage)       │
-│  - Citation integrity                                   │
-│  - UNKNOWN gate enforcement                             │
-│  Verdict: APPROVE or REVISE (with per-file findings)    │
-└─────��────┬───────────────────────────────���───────────────┘
-           │
-           v                    ┌────��─────────────────���
-┌────────────���─────────┐   ┌───>��  Round N+1           ���
-│  Targeted Revision   │   │    │  (only if flag count │
-│  (0-N LLM calls)     │   │    │   decreased; max 3)  │
-│                      │   │    └���────────────────────���┘
-│  Only flagged files  │───┘
-│  are regenerated     │
-└──────────┬───────────┘
-           │
-           v
-┌───────────���──────────────────────────────────────────────┐
-│  Post-Revision Re-Screen (0 LLM calls)                  ���
-│  - Re-runs pre-screen on revised files                  │
-│  - Regression detection: stops if flags not decreasing  │
-└──────────┬────────────────────────────────────────────��──┘
-           │
-           v
-┌─��───────────────────���──────────────────────────���─────────┐
-│  Render Parity Check (0 LLM calls)                      │
-│  - Skill coverage matches across all selected platforms  │
-│  - Agent roles consistent                               │
-│  - Metadata and source references aligned               │
-└─────���────┬───────────────────���───────────────────────────���
-           │
-           v
-      PASS / FAIL
+```mermaid
+graph TD
+    LEDGER["Generated Ledger<br/>(9 .tasks/ files)"] --> PROG["Programmatic Checks<br/>(0 LLM calls)<br/>File existence, link integrity,<br/>template leak detection"]
+    PROG --> PRE["Pre-Screen Gate<br/>(0 LLM calls)<br/>Citation density, fabrication,<br/>boilerplate, amplification<br/>Adapts to source depth"]
+    PRE --> REVIEW["Adversarial LLM Review<br/>(1 LLM call)<br/>Cross-file consistency,<br/>source fidelity, UNKNOWN gates"]
+    REVIEW -->|APPROVE| PARITY
+    REVIEW -->|REVISE| REVISE["Targeted Revision<br/>(0-N LLM calls)<br/>Only flagged files"]
+    REVISE --> RESCREEN["Post-Revision Re-Screen<br/>Regression detection"]
+    RESCREEN -->|flags remain<br/>count decreased| REVISE
+    RESCREEN -->|clean or max 3 rounds| PARITY
+    PARITY{"Render Parity Check<br/>(0 LLM calls)<br/>Cross-platform consistency"} --> RESULT["PASS / FAIL"]
 ```
 
 Concrete pre-screen findings block approval even if the adversarial reviewer returns APPROVE.
