@@ -40,14 +40,14 @@ The swarm engine then compiles 9 prompts from the IR and source material and exe
 
 ```mermaid
 graph TD
-    SRC["Source Folder<br/>(loose docs)"] --> INGEST["[1] Ingest<br/>Walk files, record evidence,<br/>analyze complexity"]
-    SRC --> DISC["[2] Discover<br/>Scan PATH for<br/>claude, codex, gemini"]
-    DISC --> ROUTE["[3] Route<br/>Assign generator, critic,<br/>renderer roles"]
-    INGEST --> IR["[4] IR Emit<br/>7 versioned JSON artifacts<br/>under .tasks/ir/"]
+    SRC["Source Folder<br/>(loose docs)"] --> INGEST["Ingest<br/>Walk files, record evidence,<br/>analyze complexity"]
+    SRC --> DISC["Discover<br/>Scan PATH for<br/>claude, codex, gemini"]
+    DISC --> ROUTE["Route<br/>Assign generator, critic,<br/>renderer roles"]
+    INGEST --> IR["IR Emit<br/>7 versioned JSON artifacts<br/>under .tasks/ir/"]
     ROUTE --> IR
-    IR -->|prompts compiled<br/>from IR + source| SWARM["[5] Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
-    SWARM --> VALID{"[6] Validate<br/>Programmatic<br/>Pre-screen<br/>Adversarial review<br/>Revision (max 3)<br/>Post-screen<br/>Parity check"}
-    VALID -->|pass| RENDER["[7] Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
+    IR -->|prompts compiled<br/>from IR + source| SWARM["Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
+    SWARM --> VALID{"Validate<br/>Programmatic<br/>Pre-screen<br/>Adversarial review<br/>Revision (max 3)<br/>Post-screen<br/>Parity check"}
+    VALID -->|pass| RENDER["Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
     VALID -->|fail| REPORT["validation-report.md<br/>(always written)"]
 ```
 

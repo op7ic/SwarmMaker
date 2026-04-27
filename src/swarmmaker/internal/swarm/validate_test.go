@@ -604,3 +604,26 @@ func TestPreScreenDepthAdvisorySkippedForShallow(t *testing.T) {
 		}
 	}
 }
+
+func TestCitationRegexMatchesBothSingularAndPlural(t *testing.T) {
+	cases := []struct {
+		input string
+		match bool
+	}{
+		{"Source: [file.md](/path/file.md)", true},
+		{"Sources: [a.md](/a), [b.md](/b)", true},
+		{"Source: Architecture doc says...", true},
+		{"Sources: Architecture and notes", true},
+		{"Source: `manifest.json`", true},
+		{"Sources: `manifest.json`, `evidence.json`", true},
+		{"no citation here", false},
+		{"some source material", false},
+	}
+	for _, tc := range cases {
+		matches := citationRe.FindAllString(tc.input, -1)
+		got := len(matches) > 0
+		if got != tc.match {
+			t.Errorf("citationRe on %q: got match=%v, want %v", tc.input, got, tc.match)
+		}
+	}
+}

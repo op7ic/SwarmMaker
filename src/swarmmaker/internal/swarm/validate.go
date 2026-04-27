@@ -36,7 +36,7 @@ type Issue struct {
 // Codex uses inline prose citations like "Source: DIMENSION 1" without brackets,
 // and sometimes wraps section names in backticks: "Source: `DIMENSION 1`".
 // We match "Source:" followed by "[", an uppercase word, or a backtick.
-var citationRe = regexp.MustCompile("(?im)Source:\\s*(?:\\[|[A-Z]|`)")
+var citationRe = regexp.MustCompile("(?im)Sources?:\\s*(?:\\[|[A-Z]|`)")
 
 // gapAcknowledgments — phrases that indicate the LLM is acknowledging gaps instead of
 // fabricating. A POSITIVE signal of restraint. Checked case-insensitively as substrings.
