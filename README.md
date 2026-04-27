@@ -181,6 +181,15 @@ swarm-me prompt-pack export -o ./pack.json   # export, edit, then:
 swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pack.json -o ./SKILL
 ```
 
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `swarm-me discover` | Discover available LLM CLI tools on your system |
+| `swarm-me validate --bundle <dir> --target <provider>` | Validate an installed skill bundle against a target LLM CLI (smoke-test discoverability and triggerability) |
+| `swarm-me prompt-pack export -o <file>` | Export the default prompt pack for customization |
+| `swarm-me version` | Print swarm-me version |
+
 ## Output Structure
 
 ```
@@ -276,11 +285,8 @@ Both rejections record an evidence event in `evidence.json` for auditability.
 ## Known Limitations
 
 1. **LLM output is non-deterministic.** Two runs with the same input produce structurally similar but textually different ledgers. The validation pipeline catches drift but cannot guarantee identical output.
-2. **No incremental regeneration.** Changing one source file regenerates all 9 ledger files. Delta-based regeneration is not implemented.
-3. **Single revision target per round.** The adversarial reviewer sees all files but revision is per-file, not holistic. Cross-file issues may require multiple rounds.
-4. **No runtime validation.** SwarmMaker validates the generated artifacts, not whether the installed skill bundle actually works when invoked by an agent at runtime.
-5. **Tool synthesis is planning-only.** The tool synthesis module decides whether tools are needed and what language they should use, but does not generate executable code.
-6. **Citation density heuristic.** The pre-screen uses a sub-linear formula for expected citation count. Very long documents (>50K chars) may trigger false positives.
+2. **Tool synthesis is planning-only.** The tool synthesis module decides whether tools are needed and what language they should use, but does not generate executable code. Source code files are now detected and referenced in generated skills, but executable tool code is not synthesized.
+3. **Citation density heuristic.** The pre-screen uses a sub-linear formula for expected citation count. Very long documents (>50K chars) may trigger false positives.
 
 ## License
 
