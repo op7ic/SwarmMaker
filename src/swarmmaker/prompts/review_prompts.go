@@ -216,139 +216,59 @@ func revisionContract(relPath string) string {
 	}
 }
 
-// HolisticRevisionFileDelimiter is the delimiter used to separate files in a
-// holistic revision response. The LLM is instructed to use this exact format.
-const HolisticRevisionFileDelimiter = "--- FILE: "
+const maxCrossFileContextChars = 1500
 
-const maxHolisticPerFileChars = 3000
-
-// BuildHolisticRevisionPrompt constructs a single prompt that asks the LLM to
-// revise ALL flagged files at once, using file delimiters to separate output.
-func BuildHolisticRevisionPrompt(ir PromptIR, pack Pack, flaggedFiles []PromptFileSnapshot, reviewFindings string, sourceHints string) (string, error) {
-	if err := ir.Validate(); err != nil {
-		return "", err
+// BuildCrossFileContext builds a cross-file context string that summarizes the
+// other flagged files and the reviewer's cross-file findings. This is prepended
+// to each per-file revision prompt so the LLM can maintain cross-file consistency
+// while revising one file at a time.
+func BuildCrossFileContext(currentFile string, allFlaggedFiles []PromptFileSnapshot, reviewFindings string) string {
+	var others []PromptFileSnapshot
+	for _, f := range allFlaggedFiles {
+		if f.RelPath != currentFile {
+			others = append(others, f)
+		}
 	}
-	if err := pack.Validate(); err != nil {
-		return "", err
-	}
-	if len(flaggedFiles) == 0 {
-		return "", fmt.Errorf("flagged files are required for holistic revision")
-	}
-	if strings.TrimSpace(reviewFindings) == "" {
-		return "", fmt.Errorf("review findings are required for holistic revision")
+	if len(others) == 0 && strings.TrimSpace(reviewFindings) == "" {
+		return ""
 	}
 
 	var b strings.Builder
+	b.WriteString("CROSS-FILE CONTEXT:\n")
+	b.WriteString("The reviewer found cross-file issues affecting multiple files in this revision round.\n")
+	b.WriteString("Ensure your revision of this file is consistent with the other files being revised.\n\n")
 
-	// Source hints (if any) go first
-	if sourceHints != "" {
-		b.WriteString(sourceHints)
+	if strings.TrimSpace(reviewFindings) != "" {
+		b.WriteString("Reviewer cross-file findings:\n")
+		b.WriteString(strings.TrimSpace(reviewFindings))
+		b.WriteString("\n\n")
 	}
 
-	// Prompt header
-	b.WriteString(promptHeader(ir, pack.Revision.Title, pack.Revision.Planning))
-
-	// Holistic revision contract
-	b.WriteString("HOLISTIC REVISION CONTRACT:\n")
-	b.WriteString("- You are revising ALL flagged files in one pass. This allows you to fix cross-file inconsistencies.\n")
-	b.WriteString("- For each file, output a delimiter line followed by the complete revised content.\n")
-	b.WriteString("- Delimiter format: --- FILE: <relative-path> ---\n")
-	b.WriteString("- Example:\n")
-	b.WriteString("  --- FILE: .tasks/skills.md ---\n")
-	b.WriteString("  (complete revised content for skills.md)\n")
-	b.WriteString("  --- FILE: .tasks/agents.md ---\n")
-	b.WriteString("  (complete revised content for agents.md)\n")
-	b.WriteString("- Output ONLY the delimiters and revised file contents. No preamble, no commentary outside of file sections.\n")
-	b.WriteString("- Each file section must contain the COMPLETE revised markdown, not a diff or summary.\n\n")
-
-	// Reviewer findings
-	b.WriteString("REVIEWER FINDINGS:\n")
-	b.WriteString(reviewFindings)
-	b.WriteString("\n\n")
-
-	// Flagged file snapshots
-	b.WriteString("FILES TO REVISE:\n\n")
-	for _, f := range flaggedFiles {
-		b.WriteString("### Current Content: ")
-		b.WriteString(f.RelPath)
-		b.WriteString("\n")
-		b.WriteString("Absolute path: ")
-		b.WriteString(f.AbsPath)
-		b.WriteString("\n")
-		b.WriteString("```md\n")
-		content := f.Content
-		if len(content) > maxHolisticPerFileChars {
-			content = content[:maxHolisticPerFileChars]
-			content += fmt.Sprintf("\n[TRUNCATED -- showing first %d of %d chars]", maxHolisticPerFileChars, len(f.Content))
-		}
-		b.WriteString(content)
-		if !strings.HasSuffix(content, "\n") {
+	if len(others) > 0 {
+		b.WriteString("Other files being revised in this round:\n")
+		for _, f := range others {
+			b.WriteString("- ")
+			b.WriteString(f.RelPath)
+			b.WriteString(" (")
+			b.WriteString(f.AbsPath)
+			b.WriteString(")\n")
+			summary := f.Content
+			if len(summary) > maxCrossFileContextChars {
+				summary = summary[:maxCrossFileContextChars] + "..."
+			}
+			b.WriteString("  Summary: ")
+			// Use only the first few lines as a brief summary
+			lines := strings.SplitN(summary, "\n", 6)
+			if len(lines) > 5 {
+				lines = lines[:5]
+			}
+			b.WriteString(strings.Join(lines, " | "))
 			b.WriteString("\n")
 		}
-		b.WriteString("```\n\n")
-
-		// Add per-file revision contracts where applicable
-		contract := revisionContract(f.RelPath)
-		if contract != "" {
-			b.WriteString(contract)
-			b.WriteString("\n")
-		}
+		b.WriteString("\n")
 	}
 
-	return b.String(), nil
-}
-
-// ParseHolisticRevisionResponse parses a multi-file LLM response that uses
-// "--- FILE: <path> ---" delimiters. Returns a map from relative path to
-// revised content. Returns an error if no valid file sections are found.
-func ParseHolisticRevisionResponse(response string) (map[string]string, error) {
-	result := make(map[string]string)
-	lines := strings.Split(response, "\n")
-	var currentFile string
-	var currentContent strings.Builder
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, HolisticRevisionFileDelimiter) {
-			// Save previous file if any
-			if currentFile != "" {
-				result[currentFile] = strings.TrimSpace(currentContent.String())
-			}
-			// Parse new file path: "--- FILE: .tasks/skills.md ---"
-			path := strings.TrimPrefix(line, HolisticRevisionFileDelimiter)
-			path = strings.TrimSuffix(path, " ---")
-			path = strings.TrimSuffix(path, "---")
-			path = strings.TrimSpace(path)
-			if path != "" {
-				currentFile = path
-				currentContent.Reset()
-			}
-		} else if currentFile != "" {
-			currentContent.WriteString(line)
-			currentContent.WriteString("\n")
-		}
-	}
-
-	// Save last file
-	if currentFile != "" {
-		result[currentFile] = strings.TrimSpace(currentContent.String())
-	}
-
-	if len(result) == 0 {
-		return nil, fmt.Errorf("no file sections found in holistic revision response")
-	}
-
-	// Remove entries with empty content
-	for path, content := range result {
-		if strings.TrimSpace(content) == "" {
-			delete(result, path)
-		}
-	}
-
-	if len(result) == 0 {
-		return nil, fmt.Errorf("all file sections in holistic revision response were empty")
-	}
-
-	return result, nil
+	return b.String()
 }
 
 func draftKindForPath(relPath string) DraftKind {

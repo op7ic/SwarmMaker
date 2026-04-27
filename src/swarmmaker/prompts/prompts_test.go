@@ -1007,100 +1007,86 @@ func TestNoToolContextBlockWhenNoToolsDetected(t *testing.T) {
 	}
 }
 
-func TestHolisticRevisionPromptIncludesAllFiles(t *testing.T) {
-	pack, err := DefaultPack()
-	if err != nil {
-		t.Fatalf("DefaultPack: %v", err)
-	}
-	flagged := []PromptFileSnapshot{
+func TestCrossFileContextIncludesOtherFiles(t *testing.T) {
+	allFlagged := []PromptFileSnapshot{
 		{RelPath: ".tasks/skills.md", AbsPath: "/tmp/out/.tasks/skills.md", Content: "## Skill: Analyzer\nSlug: analyzer\nSummary: analyze\n\nBody\n"},
 		{RelPath: ".tasks/agents.md", AbsPath: "/tmp/out/.tasks/agents.md", Content: "## Agent: Coordinator\nRole: orchestrate\n\nBody\n"},
 		{RelPath: ".tasks/context.md", AbsPath: "/tmp/out/.tasks/context.md", Content: "# Context\nSource info.\n"},
 	}
-	prompt, err := BuildHolisticRevisionPrompt(validIR(), pack, flagged, "cross-file inconsistency found", "source hint text\n")
-	if err != nil {
-		t.Fatalf("BuildHolisticRevisionPrompt: %v", err)
+	ctx := BuildCrossFileContext(".tasks/skills.md", allFlagged, "cross-file inconsistency: skills reference missing agent")
+	// Should include the cross-file header
+	if !strings.Contains(ctx, "CROSS-FILE CONTEXT") {
+		t.Error("missing CROSS-FILE CONTEXT header")
 	}
-	for _, f := range flagged {
-		if !strings.Contains(prompt, "### Current Content: "+f.RelPath) {
-			t.Errorf("prompt missing file header for %s", f.RelPath)
-		}
-		if !strings.Contains(prompt, f.Content) {
-			t.Errorf("prompt missing content for %s", f.RelPath)
-		}
+	// Should include the reviewer's findings
+	if !strings.Contains(ctx, "cross-file inconsistency: skills reference missing agent") {
+		t.Error("missing reviewer findings")
 	}
-	for _, want := range []string{
-		"HOLISTIC REVISION CONTRACT",
-		"--- FILE:",
-		"cross-file inconsistency found",
-		"source hint text",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("prompt missing %q", want)
-		}
+	// Should include the OTHER files (agents.md and context.md) but NOT the current file (skills.md)
+	if !strings.Contains(ctx, ".tasks/agents.md") {
+		t.Error("missing sibling file agents.md")
 	}
-}
-
-func TestHolisticRevisionPromptRejectsEmptyInputs(t *testing.T) {
-	pack, err := DefaultPack()
-	if err != nil {
-		t.Fatalf("DefaultPack: %v", err)
+	if !strings.Contains(ctx, ".tasks/context.md") {
+		t.Error("missing sibling file context.md")
 	}
-	_, err = BuildHolisticRevisionPrompt(validIR(), pack, nil, "findings", "")
-	if err == nil || !strings.Contains(err.Error(), "flagged files") {
-		t.Fatalf("expected flagged files error, got %v", err)
+	if strings.Contains(ctx, "- .tasks/skills.md") {
+		t.Error("current file skills.md should not appear in other files list")
 	}
-	_, err = BuildHolisticRevisionPrompt(validIR(), pack, []PromptFileSnapshot{
-		{RelPath: "a.md", AbsPath: "/tmp/a.md", Content: "content"},
-	}, "", "")
-	if err == nil || !strings.Contains(err.Error(), "review findings") {
-		t.Fatalf("expected review findings error, got %v", err)
+	// Should include content summaries of sibling files
+	if !strings.Contains(ctx, "Coordinator") {
+		t.Error("missing content summary for agents.md")
 	}
 }
 
-func TestHolisticRevisionParseMultiFileResponse(t *testing.T) {
-	response := "--- FILE: .tasks/skills.md ---\n## Skill: Revised Analyzer\nSlug: revised-analyzer\nSummary: revised analysis\n\nBody content for skills.\n--- FILE: .tasks/agents.md ---\n## Agent: Revised Coordinator\nRole: revised orchestration\n\nBody content for agents.\n"
-	parsed, err := ParseHolisticRevisionResponse(response)
-	if err != nil {
-		t.Fatalf("ParseHolisticRevisionResponse: %v", err)
+func TestCrossFileContextExcludesCurrentFile(t *testing.T) {
+	allFlagged := []PromptFileSnapshot{
+		{RelPath: ".tasks/skills.md", AbsPath: "/tmp/out/.tasks/skills.md", Content: "skills content"},
+		{RelPath: ".tasks/agents.md", AbsPath: "/tmp/out/.tasks/agents.md", Content: "agents content"},
 	}
-	if len(parsed) != 2 {
-		t.Fatalf("expected 2 files, got %d", len(parsed))
+	ctx := BuildCrossFileContext(".tasks/agents.md", allFlagged, "findings")
+	if strings.Contains(ctx, "- .tasks/agents.md") {
+		t.Error("current file should be excluded from other files list")
 	}
-	if !strings.Contains(parsed[".tasks/skills.md"], "Revised Analyzer") {
-		t.Error("skills.md missing revised content")
-	}
-	if !strings.Contains(parsed[".tasks/agents.md"], "Revised Coordinator") {
-		t.Error("agents.md missing revised content")
+	if !strings.Contains(ctx, "- .tasks/skills.md") {
+		t.Error("sibling file should be included")
 	}
 }
 
-func TestHolisticRevisionParseHandlesTrailingDelimiter(t *testing.T) {
-	response := "Some preamble text\n--- FILE: .tasks/context.md ---\n# Revised Context\nSource info.\n"
-	parsed, err := ParseHolisticRevisionResponse(response)
-	if err != nil {
-		t.Fatalf("ParseHolisticRevisionResponse: %v", err)
+func TestCrossFileContextEmptyWhenSingleFile(t *testing.T) {
+	allFlagged := []PromptFileSnapshot{
+		{RelPath: ".tasks/skills.md", AbsPath: "/tmp/out/.tasks/skills.md", Content: "skills content"},
 	}
-	if len(parsed) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(parsed))
-	}
-	if !strings.Contains(parsed[".tasks/context.md"], "Revised Context") {
-		t.Error("context.md missing revised content")
+	ctx := BuildCrossFileContext(".tasks/skills.md", allFlagged, "")
+	if ctx != "" {
+		t.Errorf("expected empty context for single file with no findings, got %q", ctx)
 	}
 }
 
-func TestHolisticRevisionFallsBackOnParseFailure(t *testing.T) {
-	_, err := ParseHolisticRevisionResponse("just some text without any file delimiters")
-	if err == nil || !strings.Contains(err.Error(), "no file sections") {
-		t.Fatalf("expected parse failure, got %v", err)
+func TestCrossFileContextTruncatesLongContent(t *testing.T) {
+	longContent := strings.Repeat("x", 5000)
+	allFlagged := []PromptFileSnapshot{
+		{RelPath: "a.md", AbsPath: "/tmp/a.md", Content: "short"},
+		{RelPath: "b.md", AbsPath: "/tmp/b.md", Content: longContent},
+	}
+	ctx := BuildCrossFileContext("a.md", allFlagged, "findings")
+	if strings.Contains(ctx, longContent) {
+		t.Error("long content should be truncated")
+	}
+	if !strings.Contains(ctx, "...") {
+		t.Error("truncated content should end with ellipsis")
 	}
 }
 
-func TestHolisticRevisionParseRejectsEmptySections(t *testing.T) {
-	response := "--- FILE: .tasks/skills.md ---\n\n--- FILE: .tasks/agents.md ---\n\n"
-	_, err := ParseHolisticRevisionResponse(response)
-	if err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("expected empty sections error, got %v", err)
+func TestCrossFileContextWithFindingsOnly(t *testing.T) {
+	allFlagged := []PromptFileSnapshot{
+		{RelPath: ".tasks/skills.md", AbsPath: "/tmp/out/.tasks/skills.md", Content: "content"},
+	}
+	ctx := BuildCrossFileContext(".tasks/skills.md", allFlagged, "important cross-file finding")
+	if !strings.Contains(ctx, "CROSS-FILE CONTEXT") {
+		t.Error("should include header when findings exist")
+	}
+	if !strings.Contains(ctx, "important cross-file finding") {
+		t.Error("should include findings")
 	}
 }
 

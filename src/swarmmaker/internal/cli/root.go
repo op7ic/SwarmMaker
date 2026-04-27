@@ -725,16 +725,8 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 						yellow.Printf("  Revision round %d/%d targeting %d file(s)\n", round, maxRevisionRounds, len(revisionFiles))
 					}
 
-					// Try holistic revision first (1 LLM call for all files), fall back to per-file.
-					var roundRevisions []revisionResult
-					if len(revisionFiles) > 1 {
-						if holistic, ok := holisticReviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow); ok {
-							roundRevisions = holistic
-						}
-					}
-					if roundRevisions == nil {
-						roundRevisions = reviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow)
-					}
+					// Per-file revision with cross-file context for consistency.
+					roundRevisions := reviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow)
 					for i := range roundRevisions {
 						roundRevisions[i].Round = round
 					}
@@ -870,8 +862,10 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 }
 
 // reviseFromReview takes the adversarial review output and feeds it to the primary LLM
-// as a targeted revision prompt for each flagged file. One revision call per file, no re-validation.
-// If the review + ADR + citation approach can't fix it in one pass, report remaining issues.
+// as a targeted revision prompt for each flagged file. Each per-file prompt includes
+// cross-file context (summaries of sibling flagged files and the reviewer's cross-file
+// findings) so the LLM can maintain consistency across files without fragile multi-file
+// response parsing.
 func reviseFromReview(
 	exec *executor.Executor,
 	draftDir string,
@@ -884,6 +878,17 @@ func reviseFromReview(
 	green, yellow *color.Color,
 ) []revisionResult {
 	results := make([]revisionResult, 0, len(filesToRevise))
+
+	// Read all flagged file snapshots up front for cross-file context.
+	allSnapshots := make([]prompts.PromptFileSnapshot, 0, len(filesToRevise))
+	for _, f := range filesToRevise {
+		snapshot, err := readPromptFileSnapshot(draftDir, f)
+		if err != nil {
+			// Will be caught again in the per-file loop below.
+			continue
+		}
+		allSnapshots = append(allSnapshots, snapshot)
+	}
 
 	for _, f := range filesToRevise {
 		snapshot, err := readPromptFileSnapshot(draftDir, f)
@@ -898,7 +903,14 @@ func reviseFromReview(
 			results = append(results, revisionResult{File: f, Success: false})
 			continue
 		}
-		revPrompt := sourceHints + revisionPrompt
+
+		// Build cross-file context when multiple files are being revised.
+		crossFileCtx := ""
+		if len(filesToRevise) > 1 {
+			crossFileCtx = prompts.BuildCrossFileContext(f, allSnapshots, reviewFindings)
+		}
+
+		revPrompt := sourceHints + crossFileCtx + revisionPrompt
 		revResp, err := exec.RunPrimaryToFile(revPrompt, snapshot.AbsPath)
 		report.llmCalls++
 		if revResp != nil {
@@ -920,79 +932,6 @@ func reviseFromReview(
 	}
 
 	return results
-}
-
-// holisticReviseFromReview sends ONE holistic revision prompt containing all flagged
-// files and parses the multi-file response. Returns revision results and true if
-// holistic parsing succeeded, or nil and false to signal fallback to per-file revision.
-func holisticReviseFromReview(
-	exec *executor.Executor,
-	draftDir string,
-	promptIR prompts.PromptIR,
-	promptPack prompts.Pack,
-	sourceHints string,
-	filesToRevise []string,
-	reviewFindings string,
-	report *validationReport,
-	green, yellow *color.Color,
-) ([]revisionResult, bool) {
-	// Build snapshots for all flagged files.
-	snapshots := make([]prompts.PromptFileSnapshot, 0, len(filesToRevise))
-	for _, f := range filesToRevise {
-		snapshot, err := readPromptFileSnapshot(draftDir, f)
-		if err != nil {
-			yellow.Printf("    ? holistic: read %s failed: %v (falling back to per-file)\n", f, err)
-			return nil, false
-		}
-		snapshots = append(snapshots, snapshot)
-	}
-
-	holisticPrompt, err := prompts.BuildHolisticRevisionPrompt(promptIR, promptPack, snapshots, reviewFindings, sourceHints)
-	if err != nil {
-		yellow.Printf("    ? holistic: prompt build failed: %v (falling back to per-file)\n", err)
-		return nil, false
-	}
-
-	resp, err := exec.RunPrimary(holisticPrompt)
-	report.llmCalls++
-	if resp != nil {
-		report.inputTokens += resp.InputTokens
-		report.outputTokens += resp.OutputTokens
-	}
-	if err != nil {
-		yellow.Printf("    ? holistic: LLM call failed: %v (falling back to per-file)\n", err)
-		return nil, false
-	}
-
-	parsed, err := prompts.ParseHolisticRevisionResponse(resp.Output)
-	if err != nil {
-		yellow.Printf("    ? holistic: parse failed: %v (falling back to per-file)\n", err)
-		return nil, false
-	}
-
-	// Write parsed content to files and build results.
-	results := make([]revisionResult, 0, len(filesToRevise))
-	for _, f := range filesToRevise {
-		content, ok := parsed[f]
-		if !ok || strings.TrimSpace(content) == "" {
-			yellow.Printf("    ? holistic: missing or empty content for %s (falling back to per-file)\n", f)
-			return nil, false
-		}
-		absPath := filepath.Join(draftDir, f)
-		if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
-			yellow.Printf("    ? holistic: write %s failed: %v (falling back to per-file)\n", f, err)
-			return nil, false
-		}
-		green.Printf("    ~ %s: revised holistically (%d chars)\n", f, len(content))
-		results = append(results, revisionResult{
-			File:     f,
-			Success:  true,
-			Duration: resp.Duration,
-			Chars:    len(content),
-		})
-	}
-
-	return results, true
 }
 
 // revisionRoundCount returns the highest round number across all revision results.
