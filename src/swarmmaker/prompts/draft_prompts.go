@@ -182,6 +182,7 @@ func requiredDraftKinds() []DraftKind {
 type promptTemplateData struct {
 	PromptIR
 	ToolchainConventions  string
+	ToolContextBlock      string
 	FlaggedFilesList      string
 	AllFilesList          string
 	PreScreenFindingsList string
@@ -193,8 +194,14 @@ type promptTemplateData struct {
 }
 
 func newPromptTemplateData(ir PromptIR) promptTemplateData {
+	// Use detected tool languages to fill ToolLanguages if empty.
+	effectiveLanguages := ir.ToolLanguages
+	if len(normalizedLanguages(effectiveLanguages)) == 0 {
+		effectiveLanguages = ir.detectedLanguages()
+	}
 	return promptTemplateData{
 		PromptIR:             ir,
-		ToolchainConventions: toolchainConventions(ir.ToolLanguages),
+		ToolchainConventions: toolchainConventions(effectiveLanguages),
+		ToolContextBlock:     ir.toolContextBlock(),
 	}
 }

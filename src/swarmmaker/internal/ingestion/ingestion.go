@@ -40,15 +40,23 @@ type FileEntry struct {
 	FileType string // classified type: "markdown", "text", "code", "data", "unknown"
 }
 
+// DetectedTool represents a source code file detected during ingestion.
+type DetectedTool struct {
+	Path     string // relative path of the code file
+	Language string // go, python, typescript, javascript, rust, shell
+	Purpose  string // inferred from filename/path
+}
+
 // Context holds all ingested unstructured data from the input folder.
 type Context struct {
-	RootPath    string          // absolute path to the input folder
-	Files       []FileEntry     // all ingested files (text-readable)
-	BinaryFiles []FileEntry     // non-text files (images, PDFs, etc.) -- noted but not read
-	Evidence    []EvidenceEntry // ingest and summary evidence records
-	FileCount   int             // total number of readable files
-	TotalBytes  int64           // total bytes read
-	Summary     string          // concatenated summary of all content for LLM input
+	RootPath      string          // absolute path to the input folder
+	Files         []FileEntry     // all ingested files (text-readable)
+	BinaryFiles   []FileEntry     // non-text files (images, PDFs, etc.) -- noted but not read
+	DetectedTools []DetectedTool  // source code files detected as tools
+	Evidence      []EvidenceEntry // ingest and summary evidence records
+	FileCount     int             // total number of readable files
+	TotalBytes    int64           // total bytes read
+	Summary       string          // concatenated summary of all content for LLM input
 }
 
 // ReadFolder reads all readable files from a directory tree and builds a
@@ -258,6 +266,8 @@ func ReadFolder(rootPath string) (*Context, error) {
 		}
 		return ctx.Files[i].RelPath < ctx.Files[j].RelPath
 	})
+
+	ctx.DetectedTools = detectTools(ctx.Files)
 
 	// Scan for prompt injection patterns before building the summary.
 	// Content is never modified -- matches are recorded as evidence for

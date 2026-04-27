@@ -240,6 +240,12 @@ func (e *Executor) RunPreFlight(prompt string) (*Response, error) {
 	return resp, nil
 }
 
+// RunPrimary sends a prompt to the primary LLM and returns the response text.
+// Unlike RunPrimaryToFile, this does not instruct the LLM to write to a file.
+func (e *Executor) RunPrimary(prompt string) (*Response, error) {
+	return e.runWithRetry(e.Primary, prompt, "primary")
+}
+
 // RunPrimaryToFile runs the primary LLM, instructing it to write output to outputFile.
 // After execution, reads the file. Falls back to stdout if file wasn't created.
 func (e *Executor) RunPrimaryToFile(prompt, outputFile string) (*Response, error) {

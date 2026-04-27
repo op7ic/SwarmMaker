@@ -185,3 +185,77 @@ func hasHiddenComponent(relPath string) bool {
 func isNoiseDir(name string) bool {
 	return noiseDirs[strings.ToLower(name)]
 }
+
+// codeExtToLanguage maps file extensions to normalized language names used by
+// the prompt compiler. Only extensions that map to a supported tool language
+// are included.
+var codeExtToLanguage = map[string]string{
+	".go":   "go",
+	".py":   "python",
+	".ts":   "typescript",
+	".tsx":  "typescript",
+	".js":   "javascript",
+	".jsx":  "javascript",
+	".rs":   "rust",
+	".sh":   "shell",
+	".bash": "shell",
+	".zsh":  "shell",
+}
+
+// detectTools scans ingested files for source code and returns a DetectedTool
+// entry for each one.
+func detectTools(files []FileEntry) []DetectedTool {
+	var tools []DetectedTool
+	for _, f := range files {
+		if f.FileType != "code" {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(f.RelPath))
+		lang, ok := codeExtToLanguage[ext]
+		if !ok {
+			continue
+		}
+		tools = append(tools, DetectedTool{
+			Path:     f.RelPath,
+			Language: lang,
+			Purpose:  inferPurpose(f.RelPath),
+		})
+	}
+	return tools
+}
+
+// inferPurpose guesses a short purpose description from the filename.
+func inferPurpose(relPath string) string {
+	base := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+	base = strings.ToLower(base)
+	switch {
+	case base == "main":
+		return "entry point"
+	case strings.Contains(base, "webhook"):
+		return "webhook handler"
+	case strings.Contains(base, "validate") || strings.Contains(base, "validator"):
+		return "validator"
+	case strings.Contains(base, "deploy"):
+		return "deployment script"
+	case strings.Contains(base, "config") || strings.Contains(base, "conf"):
+		return "config loader"
+	case strings.Contains(base, "test"):
+		return "test file"
+	case strings.Contains(base, "util") || strings.Contains(base, "helper"):
+		return "utility"
+	case strings.Contains(base, "server") || strings.Contains(base, "serve"):
+		return "server"
+	case strings.Contains(base, "client"):
+		return "client"
+	case strings.Contains(base, "handler"):
+		return "request handler"
+	case strings.Contains(base, "model") || strings.Contains(base, "schema"):
+		return "data model"
+	case strings.Contains(base, "route") || strings.Contains(base, "router"):
+		return "router"
+	case strings.Contains(base, "middleware"):
+		return "middleware"
+	default:
+		return "source file"
+	}
+}

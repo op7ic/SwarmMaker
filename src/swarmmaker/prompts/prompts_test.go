@@ -930,6 +930,83 @@ func TestNoAllCapsMustInPrompts(t *testing.T) {
 	}
 }
 
+func TestToolContextInSkillPrompt(t *testing.T) {
+	ir := validIR()
+	ir.ToolLanguages = nil // clear explicit languages
+	ir.DetectedTools = []DetectedTool{
+		{Path: "webhook.go", Language: "go", Purpose: "webhook handler"},
+		{Path: "validate.py", Language: "python", Purpose: "validator"},
+	}
+	prompt, err := CompileDraftPrompt(DraftSkills, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	for _, want := range []string{
+		"DETECTED SOURCE TOOLS:",
+		"webhook.go (go): likely webhook handler",
+		"validate.py (python): likely validator",
+		"Reference these tools in skill Process steps",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("skill prompt missing %q", want)
+		}
+	}
+}
+
+func TestToolContextInAgentPrompt(t *testing.T) {
+	ir := validIR()
+	ir.ToolLanguages = nil
+	ir.DetectedTools = []DetectedTool{
+		{Path: "server.ts", Language: "typescript", Purpose: "server"},
+	}
+	prompt, err := CompileDraftPrompt(DraftAgents, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftAgents): %v", err)
+	}
+	if !strings.Contains(prompt, "DETECTED SOURCE TOOLS:") {
+		t.Fatal("agent prompt missing DETECTED SOURCE TOOLS block")
+	}
+	if !strings.Contains(prompt, "server.ts (typescript): likely server") {
+		t.Fatal("agent prompt missing server.ts tool entry")
+	}
+}
+
+func TestLanguageSummaryWithDetectedTools(t *testing.T) {
+	ir := validIR()
+	ir.ToolLanguages = nil // no explicit languages
+	ir.DetectedTools = []DetectedTool{
+		{Path: "main.go", Language: "go", Purpose: "entry point"},
+		{Path: "util.go", Language: "go", Purpose: "utility"},
+		{Path: "deploy.sh", Language: "shell", Purpose: "deployment script"},
+	}
+	prompt, err := CompileDraftPrompt(DraftSkills, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	// Should use detected languages instead of UNKNOWN
+	if strings.Contains(prompt, "tool_languages: UNKNOWN") {
+		t.Fatal("prompt should not show UNKNOWN when detected tools provide languages")
+	}
+	if !strings.Contains(prompt, "go") {
+		t.Fatal("prompt missing detected language 'go'")
+	}
+	if !strings.Contains(prompt, "shell") {
+		t.Fatal("prompt missing detected language 'shell'")
+	}
+}
+
+func TestNoToolContextBlockWhenNoToolsDetected(t *testing.T) {
+	ir := validIR()
+	ir.DetectedTools = nil
+	prompt, err := CompileDraftPrompt(DraftSkills, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	if strings.Contains(prompt, "DETECTED SOURCE TOOLS:") {
+		t.Fatal("prompt should not contain DETECTED SOURCE TOOLS when no tools are detected")
+	}
+}
+
 func writePromptPack(t *testing.T, payload string) string {
 	t.Helper()
 	path := t.TempDir() + "/prompt-pack.json"

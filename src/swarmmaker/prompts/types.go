@@ -39,7 +39,15 @@ type PromptIR struct {
 	BinaryFileCount      int             `json:"binary_file_count"`
 	EvidenceEventCount   int             `json:"evidence_event_count"`
 	ToolLanguages        []string        `json:"tool_languages,omitempty"`
+	DetectedTools        []DetectedTool  `json:"detected_tools,omitempty"`
 	SourceFiles          []SourceFileRef `json:"source_files,omitempty"`
+}
+
+// DetectedTool mirrors ingestion.DetectedTool for prompt compilation.
+type DetectedTool struct {
+	Path     string `json:"path"`
+	Language string `json:"language"`
+	Purpose  string `json:"purpose"`
 }
 
 type SourceFileRef struct {
@@ -116,9 +124,45 @@ tool_languages: %s
 func (ir PromptIR) languageSummary() string {
 	languages := normalizedLanguages(ir.ToolLanguages)
 	if len(languages) == 0 {
+		languages = ir.detectedLanguages()
+	}
+	if len(languages) == 0 {
 		return "UNKNOWN (no supported code language was detected from source files)"
 	}
 	return strings.Join(languages, ", ")
+}
+
+// detectedLanguages returns deduplicated, sorted language names from DetectedTools.
+func (ir PromptIR) detectedLanguages() []string {
+	seen := make(map[string]struct{}, len(ir.DetectedTools))
+	var out []string
+	for _, t := range ir.DetectedTools {
+		lang := strings.ToLower(strings.TrimSpace(t.Language))
+		if lang == "" {
+			continue
+		}
+		if _, ok := seen[lang]; ok {
+			continue
+		}
+		seen[lang] = struct{}{}
+		out = append(out, lang)
+	}
+	return normalizedLanguages(out)
+}
+
+// toolContextBlock returns a prompt section listing detected source code tools.
+// Returns empty string when no tools are detected.
+func (ir PromptIR) toolContextBlock() string {
+	if len(ir.DetectedTools) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("DETECTED SOURCE TOOLS:\n")
+	for _, t := range ir.DetectedTools {
+		b.WriteString(fmt.Sprintf("- %s (%s): likely %s\n", t.Path, t.Language, t.Purpose))
+	}
+	b.WriteString("Reference these tools in skill Process steps instead of marking tool availability as UNKNOWN.\n\n")
+	return b.String()
 }
 
 func sourceBlock(content string) string {

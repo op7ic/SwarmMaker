@@ -38,6 +38,7 @@ import (
 	"github.com/op7ic/swarmmaker/internal/ingestion"
 	artifactir "github.com/op7ic/swarmmaker/internal/ir"
 	"github.com/op7ic/swarmmaker/internal/swarm"
+	"github.com/op7ic/swarmmaker/internal/textutil"
 	"github.com/op7ic/swarmmaker/prompts"
 )
 
@@ -344,10 +345,24 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	}
 
 	// -------------------------------------------------------
+	// Incremental regeneration: compute source hash and check
+	// if we can reuse existing ledger files from a prior run.
+	// -------------------------------------------------------
+	sourceContentHash := textutil.DigestString(ingested.Summary)
+	tasksDir := filepath.Join(absOutput, ".tasks")
+	incrementalSkip := checkIncrementalSkip(tasksDir, absOutput, sourceContentHash, force)
+	if incrementalSkip {
+		green.Println("  Source unchanged, reusing existing ledger files (use --force to regenerate)")
+		fmt.Println()
+	}
+
+	// -------------------------------------------------------
 	// Overwrite protection
 	// -------------------------------------------------------
-	if err := prepareOutputTree(absOutput, outputFormats, force); err != nil {
-		return err
+	if !incrementalSkip {
+		if err := prepareOutputTree(absOutput, outputFormats, force); err != nil {
+			return err
+		}
 	}
 
 	// -------------------------------------------------------
@@ -357,7 +372,6 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(absOutput, 0755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
-	tasksDir := filepath.Join(absOutput, ".tasks")
 	if err := os.MkdirAll(tasksDir, 0755); err != nil {
 		return fmt.Errorf("creating .tasks dir: %w", err)
 	}
@@ -473,6 +487,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 		EvidenceCount:    len(ingested.Evidence),
 		SourceFileCount:  ingested.FileCount,
 		BinaryFileCount:  len(ingested.BinaryFiles),
+		SourceContentHash: sourceContentHash,
 	}); err != nil {
 		return fmt.Errorf("writing IR manifest: %w", err)
 	}
@@ -705,8 +720,16 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 						yellow.Printf("  Revision round %d/%d targeting %d file(s)\n", round, maxRevisionRounds, len(revisionFiles))
 					}
 
-					// Targeted revision: only revise files that still have flags.
-					roundRevisions := reviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow)
+					// Try holistic revision first (1 LLM call for all files), fall back to per-file.
+					var roundRevisions []revisionResult
+					if len(revisionFiles) > 1 {
+						if holistic, ok := holisticReviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow); ok {
+							roundRevisions = holistic
+						}
+					}
+					if roundRevisions == nil {
+						roundRevisions = reviseFromReview(exec, absOutput, promptIR, promptPack, sourceHints, revisionFiles, reviewResp.Output, report, green, yellow)
+					}
 					for i := range roundRevisions {
 						roundRevisions[i].Round = round
 					}
@@ -894,6 +917,79 @@ func reviseFromReview(
 	return results
 }
 
+// holisticReviseFromReview sends ONE holistic revision prompt containing all flagged
+// files and parses the multi-file response. Returns revision results and true if
+// holistic parsing succeeded, or nil and false to signal fallback to per-file revision.
+func holisticReviseFromReview(
+	exec *executor.Executor,
+	draftDir string,
+	promptIR prompts.PromptIR,
+	promptPack prompts.Pack,
+	sourceHints string,
+	filesToRevise []string,
+	reviewFindings string,
+	report *validationReport,
+	green, yellow *color.Color,
+) ([]revisionResult, bool) {
+	// Build snapshots for all flagged files.
+	snapshots := make([]prompts.PromptFileSnapshot, 0, len(filesToRevise))
+	for _, f := range filesToRevise {
+		snapshot, err := readPromptFileSnapshot(draftDir, f)
+		if err != nil {
+			yellow.Printf("    ? holistic: read %s failed: %v (falling back to per-file)\n", f, err)
+			return nil, false
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+
+	holisticPrompt, err := prompts.BuildHolisticRevisionPrompt(promptIR, promptPack, snapshots, reviewFindings, sourceHints)
+	if err != nil {
+		yellow.Printf("    ? holistic: prompt build failed: %v (falling back to per-file)\n", err)
+		return nil, false
+	}
+
+	resp, err := exec.RunPrimary(holisticPrompt)
+	report.llmCalls++
+	if resp != nil {
+		report.inputTokens += resp.InputTokens
+		report.outputTokens += resp.OutputTokens
+	}
+	if err != nil {
+		yellow.Printf("    ? holistic: LLM call failed: %v (falling back to per-file)\n", err)
+		return nil, false
+	}
+
+	parsed, err := prompts.ParseHolisticRevisionResponse(resp.Output)
+	if err != nil {
+		yellow.Printf("    ? holistic: parse failed: %v (falling back to per-file)\n", err)
+		return nil, false
+	}
+
+	// Write parsed content to files and build results.
+	results := make([]revisionResult, 0, len(filesToRevise))
+	for _, f := range filesToRevise {
+		content, ok := parsed[f]
+		if !ok || strings.TrimSpace(content) == "" {
+			yellow.Printf("    ? holistic: missing or empty content for %s (falling back to per-file)\n", f)
+			return nil, false
+		}
+		absPath := filepath.Join(draftDir, f)
+		if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
+			yellow.Printf("    ? holistic: write %s failed: %v (falling back to per-file)\n", f, err)
+			return nil, false
+		}
+		green.Printf("    ~ %s: revised holistically (%d chars)\n", f, len(content))
+		results = append(results, revisionResult{
+			File:     f,
+			Success:  true,
+			Duration: resp.Duration,
+			Chars:    len(content),
+		})
+	}
+
+	return results, true
+}
+
 // revisionRoundCount returns the highest round number across all revision results.
 func revisionRoundCount(revisions []revisionResult) int {
 	maxRound := 0
@@ -928,6 +1024,7 @@ type cliIRManifest struct {
 	EvidenceCount    int      `json:"evidence_count"`
 	SourceFileCount  int      `json:"source_file_count"`
 	BinaryFileCount  int      `json:"binary_file_count"`
+	SourceContentHash string  `json:"source_content_hash,omitempty"`
 }
 
 func writeEvidenceManifest(outputDir string, ctx *ingestion.Context) (string, error) {
@@ -976,6 +1073,36 @@ func buildLedgerContext(outputDir string) string {
 	return "LEDGER CONTEXT (from already-generated foundational files):\n" +
 		strings.Join(parts, "\n") +
 		"\nEnsure your output is consistent with these foundational decisions.\n\n"
+}
+
+// checkIncrementalSkip reads the existing manifest.json from the tasks directory
+// and compares the stored source content hash against the current source hash.
+// It returns true if the source is unchanged AND all ledger files exist, meaning
+// the generation swarm can be skipped. When --force is set, it always returns false.
+func checkIncrementalSkip(tasksDir string, outputDir string, currentHash string, forceFlag bool) bool {
+	if forceFlag {
+		return false
+	}
+	manifestPath := filepath.Join(tasksDir, "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return false
+	}
+	var manifest cliIRManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false
+	}
+	if manifest.SourceContentHash == "" || manifest.SourceContentHash != currentHash {
+		return false
+	}
+	for _, rel := range ledgerFiles {
+		path := filepath.Join(outputDir, rel)
+		info, err := os.Stat(path)
+		if err != nil || info.Size() == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // scanImplementationDecisions scans planning-mode files for occurrences of

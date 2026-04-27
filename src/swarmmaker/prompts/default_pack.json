@@ -211,7 +211,7 @@
       "title": ".tasks/skills.md",
       "planning": true,
       "body_lines": [
-        "{{.ToolchainConventions}}# {{.ProjectName}} - Skill Decomposition",
+        "{{.ToolchainConventions}}{{.ToolContextBlock}}# {{.ProjectName}} - Skill Decomposition",
         "",
         "Turn the source material and .tasks ledger into the minimum complete set of operational skill runbooks. Each skill must be a step-by-step procedure that an AI agent can execute without re-reading the original source.",
         "",
@@ -256,7 +256,7 @@
       "title": ".tasks/agents.md",
       "planning": true,
       "body_lines": [
-        "{{.ToolchainConventions}}# {{.ProjectName}} - Agent Decomposition",
+        "{{.ToolchainConventions}}{{.ToolContextBlock}}# {{.ProjectName}} - Agent Decomposition",
         "",
         "Turn the source material and .tasks ledger into the minimum complete set of operational agents. Each agent must specify exact coordination protocols, data shapes for handoffs, and concrete error-handling procedures.",
         "",

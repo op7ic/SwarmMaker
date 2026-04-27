@@ -350,6 +350,12 @@ func buildRoutingDecision(ids ids, input ArtifactInput, source contracts.SourceI
 }
 
 func buildToolSynthesisRequest(ids ids, input ArtifactInput, spec contracts.OutputTreeSpec) contracts.ToolSynthesisRequest {
+	// Resolve target language: prefer explicit ToolLanguages, fall back to
+	// languages detected from ingested source code files.
+	effectiveLanguages := input.ToolLanguages
+	if toolLanguage(effectiveLanguages) == contracts.ToolLanguageUnknown && input.Ingested != nil {
+		effectiveLanguages = detectedToolLanguages(input.Ingested.DetectedTools)
+	}
 	return contracts.ToolSynthesisRequest{
 		SchemaVersion:        contracts.SchemaVersionV1,
 		RequestID:            ids.toolRequestID,
@@ -357,9 +363,26 @@ func buildToolSynthesisRequest(ids ids, input ArtifactInput, spec contracts.Outp
 		SourceID:             ids.sourceID,
 		OutputTreeSpecID:     spec.SpecID,
 		Purpose:              "Classify source-evidenced helper tools and generate them only when validation proof can be produced.",
-		TargetLanguage:       toolLanguage(input.ToolLanguages),
+		TargetLanguage:       toolLanguage(effectiveLanguages),
 		RequiredCapabilities: []string{"tool_intent_classification", "proof_of_use_links", "compile_or_runtime_validation"},
 	}
+}
+
+func detectedToolLanguages(tools []ingestion.DetectedTool) []string {
+	seen := make(map[string]struct{}, len(tools))
+	var out []string
+	for _, t := range tools {
+		lang := strings.ToLower(strings.TrimSpace(t.Language))
+		if lang == "" {
+			continue
+		}
+		if _, ok := seen[lang]; ok {
+			continue
+		}
+		seen[lang] = struct{}{}
+		out = append(out, lang)
+	}
+	return out
 }
 
 type payload struct {
