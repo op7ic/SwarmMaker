@@ -132,8 +132,11 @@ func TestCompileDraftPromptAddsNonRemovableSkillAndAgentCompilerContracts(t *tes
 	for _, want := range []string{
 		"SKILL COMPILER CONTRACT",
 		"`.tasks/skills.md` is compiler input",
-		"Every slug must be unique, kebab-case, and renderer-safe",
-		"required `.tasks` inputs, downstream render responsibilities",
+		"Every slug must be unique",
+		"Process:",
+		"MUST DO",
+		"MUST NOT",
+		"When to Invoke:",
 	} {
 		if !strings.Contains(skillPrompt, want) {
 			t.Fatalf("skill prompt missing %q:\n%s", want, skillPrompt)
@@ -148,7 +151,8 @@ func TestCompileDraftPromptAddsNonRemovableSkillAndAgentCompilerContracts(t *tes
 		"AGENT COMPILER CONTRACT",
 		"`.tasks/agents.md` is compiler input",
 		"collectively cover Observe, Orient, Decide, and Act responsibilities",
-		"owned skills or ledger responsibilities",
+		"Coordination Protocol:",
+		"Error Handling:",
 	} {
 		if !strings.Contains(agentPrompt, want) {
 			t.Fatalf("agent prompt missing %q:\n%s", want, agentPrompt)
@@ -706,7 +710,6 @@ func TestAgentRoleMultiplicity(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Multiple agents MAY share the same OODA role",
-		"unique name, distinct owned responsibilities, and explicit handoff relationships",
 		"Do not split artificially to pad the count, and do not merge artificially to force exactly 4 agents",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -762,6 +765,59 @@ func TestToolLanguageUnknownClarification(t *testing.T) {
 				t.Fatalf("prompt %s missing build-command prohibition", kind)
 			}
 		})
+	}
+}
+
+func TestSkillContractHasProcessSection(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftSkills, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	if !strings.Contains(prompt, "Process:") {
+		t.Fatal("skill prompt missing Process: section")
+	}
+}
+
+func TestSkillContractHasConstraints(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftSkills, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	if !strings.Contains(prompt, "MUST DO") {
+		t.Fatal("skill prompt missing MUST DO constraint section")
+	}
+	if !strings.Contains(prompt, "MUST NOT") {
+		t.Fatal("skill prompt missing MUST NOT constraint section")
+	}
+}
+
+func TestSkillContractHasWhenToInvoke(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftSkills, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	if !strings.Contains(prompt, "When to Invoke:") {
+		t.Fatal("skill prompt missing When to Invoke: section")
+	}
+}
+
+func TestAgentContractHasCoordinationProtocol(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftAgents, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftAgents): %v", err)
+	}
+	if !strings.Contains(prompt, "Coordination Protocol:") {
+		t.Fatal("agent prompt missing Coordination Protocol: section")
+	}
+}
+
+func TestAgentContractHasErrorHandling(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftAgents, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftAgents): %v", err)
+	}
+	if !strings.Contains(prompt, "Error Handling:") {
+		t.Fatal("agent prompt missing Error Handling: section")
 	}
 }
 

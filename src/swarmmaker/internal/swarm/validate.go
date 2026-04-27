@@ -58,6 +58,21 @@ var gapAcknowledgments = []string{
 // dimension reference pattern: "Dimension N" or "Dim N" in generated output
 var dimRefRe = regexp.MustCompile(`(?i)(?:dimension|dim)\.?\s*#?\s*(\d+)`)
 
+// processStepRe matches numbered steps (e.g., "1. ", "2. ") or "## Process" headings.
+var processStepRe = regexp.MustCompile(`(?m)(?:^\s*\d+\.\s|^#{1,3}\s*Process)`)
+
+// constraintRe matches constraint indicators in skills output.
+var constraintRe = regexp.MustCompile(`(?i)(?:MUST\s+DO|MUST\s+NOT|Constraints)`)
+
+// triggerRe matches invocation trigger patterns in skills output.
+var triggerRe = regexp.MustCompile(`(?i)(?:When\s+to\s+Invoke|trigger\s+condition)`)
+
+// coordinationRe matches coordination protocol indicators in agents output.
+var coordinationRe = regexp.MustCompile(`(?i)(?:Coordination\s+Protocol|Handoff)`)
+
+// errorHandlingRe matches error/failure handling indicators in agents output.
+var errorHandlingRe = regexp.MustCompile(`(?i)(?:Error\s+Handling|(?:error|failure)\s+handling)`)
+
 // fabrication signal patterns — things LLMs commonly invent
 var fabricationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+(?:https?://)`),              // fabricated curl commands
@@ -268,6 +283,32 @@ func PreScreenFiles(outputDir string, criticalFiles []string, complexity *ingest
 				result.addFlag(f, "zero citations (no complexity data available)")
 			}
 		}
+
+		// --- OPERATIONAL DEPTH ADVISORY CHECKS (moderate/deep only) ---
+		if complexity != nil && (complexity.Depth == "moderate" || complexity.Depth == "deep") {
+			base := filepath.Base(f)
+
+			if base == "skills.md" {
+				if !processStepRe.MatchString(text) {
+					result.addAdvisory(f, "missing procedural steps (no numbered process found)")
+				}
+				if !constraintRe.MatchString(text) {
+					result.addAdvisory(f, "missing constraints (no MUST DO/MUST NOT/Constraints found)")
+				}
+				if !triggerRe.MatchString(text) {
+					result.addAdvisory(f, "missing trigger conditions (no When to Invoke found)")
+				}
+			}
+
+			if base == "agents.md" {
+				if !coordinationRe.MatchString(text) {
+					result.addAdvisory(f, "missing coordination protocol (no Coordination Protocol/Handoff found)")
+				}
+				if !errorHandlingRe.MatchString(text) {
+					result.addAdvisory(f, "missing error handling (no Error Handling section found)")
+				}
+			}
+		}
 	}
 
 	// Shallow sources: ALWAYS review regardless of per-file flags.
@@ -284,6 +325,13 @@ func PreScreenFiles(outputDir string, criticalFiles []string, complexity *ingest
 func (r *PreScreenResult) addFlag(file, reason string) {
 	r.FileFlags[file] = append(r.FileFlags[file], reason)
 	r.Reasons = append(r.Reasons, fmt.Sprintf("%s: %s", file, reason))
+	r.NeedsLLMReview = true
+}
+
+// addAdvisory adds a non-blocking advisory reason. It informs the reviewer
+// but does NOT appear in FileFlags, so HasConcreteFlags remains unaffected.
+func (r *PreScreenResult) addAdvisory(file, reason string) {
+	r.Reasons = append(r.Reasons, fmt.Sprintf("[advisory] %s: %s", file, reason))
 	r.NeedsLLMReview = true
 }
 

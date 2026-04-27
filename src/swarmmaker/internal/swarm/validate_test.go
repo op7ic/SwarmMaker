@@ -466,3 +466,141 @@ func TestPreScreenBlockingReasonsReturnConcreteFlagsInOrder(t *testing.T) {
 		}
 	}
 }
+
+// --- Operational depth advisory checks ---
+
+func TestPreScreenSkillsDepthAdvisory(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 15000)
+	// skills.md without process steps, constraints, or trigger conditions
+	content := "## Overview\nThis skill does stuff.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/prompts/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "moderate", SourceLength: 15000}
+	result := PreScreenFiles(dir, []string{".tasks/prompts/skills.md"}, complexity, source)
+
+	if !result.NeedsLLMReview {
+		t.Error("expected advisory flags to trigger NeedsLLMReview")
+	}
+
+	wantAdvisories := []string{"missing procedural steps", "missing constraints", "missing trigger conditions"}
+	for _, want := range wantAdvisories {
+		found := false
+		for _, r := range result.Reasons {
+			if strings.Contains(r, want) && strings.Contains(r, "[advisory]") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected advisory containing %q, got reasons: %v", want, result.Reasons)
+		}
+	}
+
+	// Advisory flags should NOT appear in FileFlags (not concrete/blocking)
+	if result.HasConcreteFlags() {
+		t.Errorf("advisory flags should not be concrete, got FileFlags: %v", result.FileFlags)
+	}
+}
+
+func TestPreScreenSkillsDepthClean(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 15000)
+	// skills.md WITH process steps, constraints, and trigger conditions
+	content := "## Process\n1. First step\n2. Second step\n"
+	content += "Constraints: MUST DO validation before proceeding.\n"
+	content += "When to Invoke: triggered on new input.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/prompts/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "deep", SourceLength: 50000}
+	result := PreScreenFiles(dir, []string{".tasks/prompts/skills.md"}, complexity, source)
+
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "skills.md") {
+			t.Errorf("expected no advisory flags for complete skills.md, got: %s", r)
+		}
+	}
+}
+
+func TestPreScreenAgentsDepthAdvisory(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 15000)
+	// agents.md without coordination protocol or error handling
+	// Must be >1500 chars to avoid deep-source "suspiciously short" concrete flag
+	content := "## Overview\nAgent definitions.\n"
+	for i := 0; i < 60; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/prompts/agents.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "deep", SourceLength: 50000}
+	result := PreScreenFiles(dir, []string{".tasks/prompts/agents.md"}, complexity, source)
+
+	if !result.NeedsLLMReview {
+		t.Error("expected advisory flags to trigger NeedsLLMReview")
+	}
+
+	wantAdvisories := []string{"missing coordination protocol", "missing error handling"}
+	for _, want := range wantAdvisories {
+		found := false
+		for _, r := range result.Reasons {
+			if strings.Contains(r, want) && strings.Contains(r, "[advisory]") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected advisory containing %q, got reasons: %v", want, result.Reasons)
+		}
+	}
+
+	// Advisory flags should NOT be concrete
+	if result.HasConcreteFlags() {
+		t.Errorf("advisory flags should not be concrete, got FileFlags: %v", result.FileFlags)
+	}
+}
+
+func TestPreScreenAgentsDepthClean(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 15000)
+	// agents.md WITH coordination protocol and error handling
+	content := "## Coordination Protocol\nHandoff between agents.\n"
+	content += "## Error Handling\nOn failure, retry with backoff.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/prompts/agents.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "moderate", SourceLength: 15000}
+	result := PreScreenFiles(dir, []string{".tasks/prompts/agents.md"}, complexity, source)
+
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "agents.md") {
+			t.Errorf("expected no advisory flags for complete agents.md, got: %s", r)
+		}
+	}
+}
+
+func TestPreScreenDepthAdvisorySkippedForShallow(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 500)
+	// skills.md without process steps — but shallow source should skip depth checks
+	content := "## Overview\nThis skill does stuff.\nSource: [notes]\n"
+	content += "Not specified in source material.\n"
+	writeFile(t, dir, ".tasks/prompts/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "shallow", SourceLength: 500}
+	result := PreScreenFiles(dir, []string{".tasks/prompts/skills.md"}, complexity, source)
+
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") {
+			t.Errorf("shallow source should not trigger depth advisory checks, got: %s", r)
+		}
+	}
+}

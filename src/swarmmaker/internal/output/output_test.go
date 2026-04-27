@@ -14,6 +14,7 @@ package output
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -372,6 +373,64 @@ func TestJoinRootReturnsErrorForMalformedPaths(t *testing.T) {
 				t.Fatalf("joinRoot(%q, %q) = nil error, want error", tt.rootDir, tt.rel)
 			}
 		})
+	}
+}
+
+func TestBuildSkillContentNoGenericEvidence(t *testing.T) {
+	skill := Skill{
+		Name:    "Analyzer",
+		Slug:    "analyzer",
+		Summary: "Analyze input data",
+		Body:    "Step 1: read files.\n\n## Evidence\n\n- All inputs parsed without error.\n- Output schema matches spec.",
+	}
+	content := buildSkillContent(skill, FormatClaude)
+	if strings.Contains(content, "Use source-backed facts only") {
+		t.Fatal("rendered skill should not contain hardcoded generic evidence discipline")
+	}
+	if !strings.Contains(content, "## Evidence") {
+		t.Fatal("rendered skill should preserve the skill's own Evidence section")
+	}
+}
+
+func TestBuildSkillContentPreservesFullBody(t *testing.T) {
+	var body strings.Builder
+	body.WriteString("## When to Invoke\n\n- Trigger A\n- Trigger B\n\n")
+	body.WriteString("## Inputs Required\n\n- Field alpha (string)\n- Field beta (int)\n\n")
+	body.WriteString("## Process\n\n")
+	for i := 1; i <= 15; i++ {
+		body.WriteString(fmt.Sprintf("%d. Step %d: do something concrete.\n", i, i))
+	}
+	body.WriteString("\n## Output Format\n\n- result: map[string]int\n\n")
+	body.WriteString("## Constraints\n\n### MUST DO\n- Validate inputs.\n- Log progress.\n\n### MUST NOT\n- Skip validation.\n- Mutate global state.\n\n")
+	body.WriteString("## UNKNOWN Gates\n\n- Threshold for field beta is unspecified.\n\n")
+	body.WriteString("## Evidence\n\n- All 15 steps completed.\n- Output schema validated.\n")
+
+	skill := Skill{
+		Name:    "FullDepth",
+		Slug:    "full-depth",
+		Summary: "A skill with full operational depth",
+		Body:    body.String(),
+	}
+	content := buildSkillContent(skill, FormatGemini)
+
+	for _, want := range []string{
+		"# FullDepth",
+		"A skill with full operational depth",
+		"## Instructions",
+		"## When to Invoke",
+		"## Process",
+		"1. Step 1: do something concrete.",
+		"15. Step 15: do something concrete.",
+		"## Output Format",
+		"### MUST DO",
+		"### MUST NOT",
+		"## UNKNOWN Gates",
+		"## Evidence",
+		"All 15 steps completed.",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("rendered skill missing %q", want)
+		}
 	}
 }
 

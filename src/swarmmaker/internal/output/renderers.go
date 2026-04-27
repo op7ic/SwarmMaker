@@ -337,10 +337,6 @@ func buildSkillContent(skill Skill, _ Format) string {
 	if !strings.HasSuffix(skill.Body, "\n") {
 		b.WriteString("\n")
 	}
-	b.WriteString("\n## Evidence Discipline\n\n")
-	b.WriteString("- Use source-backed facts only.\n")
-	b.WriteString("- Mark missing required facts as UNKNOWN and block dependent decisions.\n")
-	b.WriteString("- Record validation evidence before claiming success.\n")
 	return b.String()
 }
 
