@@ -2,8 +2,8 @@
 .idea/
 
 # Test artifacts
-/testoutput/
-/testinput/
+testoutput*/
+testinput*/
 
 # Build artifacts
 build/
@@ -23,6 +23,3 @@ dist/
 
 # Compiled test harnesses
 e2e_harness
-/testoutput_codex
-/testoutput_claude
-/testoutput_v2
