@@ -10,10 +10,10 @@ SwarmMaker automates this as a **two-stage compiler**:
 
 ```mermaid
 graph LR
-    A["Loose Docs<br/>notes.md, api_docs.md,<br/>specs.md, scratch.txt"] -->|Stage 1<br/>LLM-backed| B[".tasks/ ledger<br/>9 ledger files<br/>7 IR artifacts<br/>evidence.json<br/>validation report"]
-    B -->|Stage 2<br/>deterministic| C[".claude/<br/>.codex/<br/>.gemini/<br/>README.md<br/>install.sh"]
-    B --> D{"Validation<br/>Programmatic<br/>Pre-screen<br/>Adversarial<br/>Revision x3<br/>Parity check"}
-    D -->|pass| C
+    A["Loose Docs<br/>notes, specs,<br/>API docs, scratch"] -->|Stage 1<br/>LLM-backed| B[".tasks/ ledger<br/>9 ledger files<br/>7 IR artifacts<br/>evidence.json"]
+    B --> C{"Validation<br/>Programmatic<br/>Pre-screen<br/>Adversarial review<br/>Revision (max 3)<br/>Parity check"}
+    C -->|pass| D["Stage 2: Render<br/>.claude/ .codex/ .gemini/<br/>.agents/skills/<br/>README + install.sh"]
+    C -->|fail| E["validation-report.md"]
 ```
 
 **Stage 1** uses LLM calls to decompose source material into a shared `.tasks/` ledger with per-claim citations. **Stage 2** is a deterministic, LLM-free render from that ledger into platform-specific output trees. The expensive work happens once; rendering to N targets is a transform.
@@ -45,21 +45,19 @@ After generation, the validation pipeline runs (see below). After each revision 
 
 ```mermaid
 graph TD
-    SRC["Source Folder<br/>(loose docs)"] -->|walk files,<br/>record evidence| INGEST["Ingest<br/>Complexity analysis,<br/>token budget enforcement"]
-    INGEST -->|>=1 file,<br/>>0 chars| SANITY{"Sanity Check<br/>(zero LLM cost)"}
-    SANITY -->|fail| REJECT["Reject<br/>evidence recorded,<br/>no LLM tokens spent"]
-    SANITY -->|pass| DISC_STEP["Continue"]
-    SRC -->|scan PATH| DISC["Discover<br/>Probe claude, codex,<br/>gemini capabilities"]
-    DISC -->|assign roles| ROUTE["Route<br/>Generator, critic,<br/>renderer assignment<br/>+ fallback accounting"]
-    DISC_STEP -->|source IR +<br/>evidence manifest| IR["IR Emit<br/>7 versioned JSON artifacts<br/>with SHA-256 digests"]
-    ROUTE -->|routing decision| IR
-    IR -->|1 short LLM call| PREFLIGHT{"Pre-flight<br/>Validation<br/>(~$0.01)"}
-    PREFLIGHT -->|INSUFFICIENT| REJECT2["Reject<br/>LLM explains what<br/>is missing"]
-    PREFLIGHT -->|SUFFICIENT| PHASE_A["Phase A<br/>context.md + tasks.md<br/>(foundational)"]
-    PHASE_A --> PHASE_B["Phase B<br/>7 dependent files<br/>(with ledger context)"]
-    PHASE_B -->|9 ledger files| VALID{"Validate<br/>6-layer gate"}
-    VALID -->|pass| RENDER["Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
-    VALID -->|fail| REPORT["validation-report.md<br/>(always written)"]
+    SRC["Source Folder"] --> INGEST["Ingest + Discover<br/>Walk files, record evidence,<br/>scan PATH for LLM CLIs"]
+    INGEST --> SANITY{"Sanity Check"}
+    SANITY -->|empty dir| REJECT["Reject"]
+    SANITY -->|ok| IR["IR Emit + Route<br/>7 JSON artifacts,<br/>assign generator/critic roles"]
+    IR --> PREFLIGHT{"Pre-flight<br/>LLM Validation"}
+    PREFLIGHT -->|insufficient| REJECT
+    PREFLIGHT -->|sufficient| PHASE_A["Phase A: Generate<br/>context.md + tasks.md"]
+    PHASE_A --> PHASE_B["Phase B: Generate<br/>7 dependent files<br/>with ledger context"]
+    PHASE_B --> VALIDATE{"Validate<br/>Programmatic checks<br/>Pre-screen heuristics<br/>Adversarial LLM review"}
+    VALIDATE -->|revise| REPAIR["Citation Repair +<br/>Targeted Revision"]
+    REPAIR --> VALIDATE
+    VALIDATE -->|pass| RENDER["Render<br/>.codex/ .claude/ .gemini/<br/>.agents/skills/"]
+    VALIDATE -->|fail| REPORT["validation-report.md"]
 ```
 
 ### Agent Decomposition Model
@@ -237,15 +235,15 @@ The validation report at `.tasks/validation-report.md` is written on both succes
 
 ```mermaid
 graph TD
-    LEDGER["Generated Ledger<br/>(9 .tasks/ files)"] --> PROG["Programmatic Checks<br/>File existence, link integrity,<br/>template leak detection,<br/>meta-commentary filtering"]
-    PROG --> PRE["Pre-Screen Gate<br/>Citation density, fabrication,<br/>boilerplate, amplification<br/>Adapts to source depth"]
-    PRE --> REVIEW["Adversarial LLM Review<br/>Cross-file consistency,<br/>source fidelity, UNKNOWN gates"]
-    REVIEW -->|APPROVE| PARITY
-    REVIEW -->|REVISE| REVISE["Targeted Revision<br/>Only flagged files regenerated"]
-    REVISE --> RESCREEN["Post-Revision Re-Screen<br/>Regression detection:<br/>stops if flags not decreasing"]
-    RESCREEN -->|improved,<br/>flags remain| REVISE
-    RESCREEN -->|clean or<br/>max 3 rounds| PARITY
-    PARITY{"Render Parity Check<br/>Cross-platform skill/agent<br/>consistency"} --> RESULT["PASS / FAIL"]
+    LEDGER["Generated Ledger"] --> PROG["Programmatic Checks<br/>Links, leaks, meta-commentary"]
+    PROG --> PRE["Pre-Screen<br/>Citations, fabrication,<br/>boilerplate, depth-adaptive"]
+    PRE --> REVIEW["Adversarial LLM Review<br/>Cross-file consistency,<br/>source fidelity"]
+    REVIEW -->|approve| PARITY
+    REVIEW -->|revise| REVISE["Targeted Revision<br/>+ Citation Path Repair"]
+    REVISE --> RECHECK["Re-Screen<br/>Stops if no improvement<br/>Max 3 rounds"]
+    RECHECK -->|concrete flags remain| REVISE
+    RECHECK -->|clear| PARITY
+    PARITY["Render Parity Check"] --> RESULT["PASS / FAIL"]
 ```
 
 ## Development
