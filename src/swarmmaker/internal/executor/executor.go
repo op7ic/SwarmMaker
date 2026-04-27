@@ -686,11 +686,17 @@ func buildArgs(toolName, prompt, workDir, model, outputFile string, useStdin, sa
 		// exec                                              : non-interactive mode
 		// -m <model>                                        : model override (e.g. "o4-mini")
 		// -o <file>                                         : write the final assistant message directly to file
+		// -c model_reasoning_effort="medium"                : avoid xhigh (default) which causes
+		//                                                     multi-minute agent loops with shell commands
 		// -s read-only                                      : bubblewrap sandbox (preferred when bwrap available)
 		// --dangerously-bypass-approvals-and-sandbox         : fallback when bwrap unavailable (WSL, containers)
 		// --skip-git-repo-check                             : allow outside git repos
 		// -C <dir>                                          : working root directory
 		args := []string{"exec"}
+		// Override reasoning effort to medium. The codex default (xhigh) triggers
+		// multi-agent loops with shell commands that take 5-30+ minutes per task.
+		// Medium produces equivalent quality output in ~20 seconds.
+		args = append(args, "-c", `model_reasoning_effort="medium"`)
 		if model != "" {
 			args = append(args, "-m", model)
 		}

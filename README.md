@@ -47,7 +47,7 @@ graph TD
 
 ### Agent Decomposition Model
 
-Generated agents follow Boyd's **OODA loop** (Observe-Orient-Decide-Act) [1]:
+Generated agents follow the **OODA loop** (Observe-Orient-Decide-Act):
 
 | Role | Responsibility | Example |
 |------|---------------|---------|
@@ -57,8 +57,6 @@ Generated agents follow Boyd's **OODA loop** (Observe-Orient-Decide-Act) [1]:
 | **Act** | Execute workflows, produce outputs | Runbook generation, notification delivery |
 
 Multiple agents may share an OODA role when the domain requires distinct execution concerns within a phase. The agent count is the minimum required to cover all source-backed responsibilities.
-
-[1] Boyd, J. R. (1996). *The Essence of Winning and Losing*. Unpublished briefing.
 
 ## Design Invariants
 
@@ -81,11 +79,14 @@ Measured on a real 4-file input (10KB source material) producing a codex skill b
 
 | Metric | Claude CLI | Codex CLI | Mixed (Claude gen + Codex critic) |
 |--------|-----------|-----------|-----------------------------------|
-| Generation (9 tasks) | ~16 min (serial) | ~45 min (serial) | ~7 min (concurrent) |
-| Adversarial review | ~1.5 min | ~5 min | N/A (uses critic) |
-| Revision (per file) | ~2 min | ~4 min | N/A (uses generator) |
-| Total (with revision) | ~35 min | ~70 min | ~25 min |
-| Output size | ~163 KB | ~386 KB | Varies by generator |
+| Generation (9 tasks) | ~18 min (serial) | ~18 min (serial) | ~7 min (concurrent) |
+| Adversarial review | ~2 min | ~2 min | N/A (uses critic) |
+| Revision (per file) | ~2 min | ~2 min | N/A (uses generator) |
+| Total (with revision) | ~35 min | ~35 min | ~25 min |
+| Output size (skills.md) | ~62 KB | ~88 KB | Varies by generator |
+| Skill count | ~11 | ~10 | Varies by generator |
+
+Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and MUST/MUST NOT constraints.
 
 Scaling: generation time is O(N) in task count (currently fixed at 9). Prompt size is O(S) in source material size. Revision rounds are bounded at 3 with regression detection.
 
@@ -102,15 +103,6 @@ Scaling: generation time is O(N) in task count (currently fixed at 9). Prompt si
 | Source fidelity | Per-claim citations required | No citation contract | No citation contract |
 
 SwarmMaker does not replace runtime agent frameworks. It produces the **knowledge artifacts** those frameworks consume.
-
-## Known Limitations
-
-1. **LLM output is non-deterministic.** Two runs with the same input produce structurally similar but textually different ledgers. The validation pipeline catches drift but cannot guarantee identical output.
-2. **No incremental regeneration.** Changing one source file regenerates all 9 ledger files. Delta-based regeneration is not implemented.
-3. **Single revision target per round.** The adversarial reviewer sees all files but revision is per-file, not holistic. Cross-file issues may require multiple rounds.
-4. **No runtime validation.** SwarmMaker validates the generated artifacts, not whether the installed skill bundle actually works when invoked by an agent at runtime.
-5. **Tool synthesis is planning-only.** The tool synthesis module decides whether tools are needed and what language they should use, but does not generate executable code.
-6. **Citation density heuristic.** The pre-screen uses a sub-linear formula for expected citation count. Very long documents (>50K chars) may trigger false positives.
 
 ## Installation
 
@@ -215,7 +207,15 @@ graph TD
     PARITY{"Render Parity Check<br/>(0 LLM calls)<br/>Cross-platform consistency"} --> RESULT["PASS / FAIL"]
 ```
 
-Concrete pre-screen findings block approval even if the adversarial reviewer returns APPROVE.
+Every generated ledger passes through six validation layers before output is written. No layer can be skipped. The pipeline first runs zero-LLM-cost programmatic checks (file existence, link integrity, template leak detection using 16 known patterns, and meta-commentary filtering). It then runs a pre-screen gate that adapts to source depth: shallow sources get lenient citation checks, deep sources require higher citation density (sub-linear formula to avoid penalising long documents), dimension coverage, and amplification ratio checks. Fabrication patterns and boilerplate injection are checked regardless of depth.
+
+If the pre-screen finds concrete file-level flags, those are forwarded to the adversarial LLM review -- a separate LLM call (using the critic provider) that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings.
+
+When the verdict is REVISE, only flagged files are regenerated in targeted revision rounds. After each round, the post-revision re-screen re-evaluates the revised files. If the flag count decreased, another round runs (up to 3 total). If the flag count did not decrease (regression), the loop stops immediately. Concrete pre-screen findings block approval even if the adversarial reviewer returns APPROVE -- the programmatic layer has veto power over the LLM reviewer.
+
+Finally, when multiple output formats are selected, a render parity check verifies that all platform trees (`.claude/`, `.codex/`, `.gemini/`) contain the same skills, agent roles, metadata, and source references. Drift between platforms is a hard failure.
+
+The validation report at `.tasks/validation-report.md` is written on both success and failure paths. If the report file itself cannot be written, the report is dumped to stderr as a last resort.
 
 ## Development
 
@@ -228,30 +228,20 @@ make all       # fmt + lint + test + build
 make release   # Cross-compile (linux/darwin/windows, amd64/arm64)
 ```
 
-Source: `src/swarmmaker/`. The root Makefile delegates there.
-
-### Packages
-
-| Package | Role |
-|---------|------|
-| `cmd/swarm-me` | Entry point, version injection |
-| `internal/cli` | 5-phase pipeline orchestrator, validation gates |
-| `internal/ingestion` | Evidence-backed source traversal |
-| `internal/ir` | Versioned JSON IR with SHA-256 digests |
-| `internal/output` | Platform renderers + parity validation |
-| `internal/swarm` | Concurrent task engine + pre-screening |
-| `internal/executor` | LLM subprocess management (retry, stdin transport, sandbox detection) |
-| `internal/discovery` | LLM CLI detection via PATH |
-| `internal/routing` | Deterministic routing with fallback accounting |
-| `internal/contracts` | Typed schema contracts (12 types) |
-| `internal/redaction` | Secret pattern redaction |
-| `internal/toolsynthesis` | Tool generation planning |
-| `internal/ooda` | OODA state definitions |
-| `prompts` | Prompt pack loader, semantic reviewer, compiler |
+Source code lives in `src/swarmmaker/`. The root Makefile delegates all Go commands there.
 
 ### Release
 
 [GoReleaser](https://goreleaser.com/) builds for linux/darwin/windows on amd64/arm64. Version injected via `-X main.version={{.Version}}`.
+
+## Known Limitations
+
+1. **LLM output is non-deterministic.** Two runs with the same input produce structurally similar but textually different ledgers. The validation pipeline catches drift but cannot guarantee identical output.
+2. **No incremental regeneration.** Changing one source file regenerates all 9 ledger files. Delta-based regeneration is not implemented.
+3. **Single revision target per round.** The adversarial reviewer sees all files but revision is per-file, not holistic. Cross-file issues may require multiple rounds.
+4. **No runtime validation.** SwarmMaker validates the generated artifacts, not whether the installed skill bundle actually works when invoked by an agent at runtime.
+5. **Tool synthesis is planning-only.** The tool synthesis module decides whether tools are needed and what language they should use, but does not generate executable code.
+6. **Citation density heuristic.** The pre-screen uses a sub-linear formula for expected citation count. Very long documents (>50K chars) may trigger false positives.
 
 ## License
 
