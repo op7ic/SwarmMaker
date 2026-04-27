@@ -1830,3 +1830,132 @@ func TestOutputBundleHasGitignore(t *testing.T) {
 		}
 	}
 }
+
+// --- Incremental regeneration tests ---
+
+func writeTestManifest(t *testing.T, tasksDir string, hash string) {
+	t.Helper()
+	m := cliIRManifest{
+		ProductName:       "test",
+		CLIName:           "swarm-me",
+		SourceContentHash: hash,
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "manifest.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestLedgerFiles(t *testing.T, outputDir string) {
+	t.Helper()
+	for _, rel := range ledgerFiles {
+		path := filepath.Join(outputDir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# test content\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestIncrementalSkipsUnchangedSource(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hash := "sha256:abcdef1234567890"
+	writeTestManifest(t, tasksDir, hash)
+	writeTestLedgerFiles(t, dir)
+
+	if !checkIncrementalSkip(tasksDir, dir, hash, false) {
+		t.Fatal("expected incremental skip when source unchanged and all files present")
+	}
+}
+
+func TestIncrementalRegeneratesOnChange(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestManifest(t, tasksDir, "sha256:oldhash")
+	writeTestLedgerFiles(t, dir)
+
+	if checkIncrementalSkip(tasksDir, dir, "sha256:newhash", false) {
+		t.Fatal("expected no skip when source hash changed")
+	}
+}
+
+func TestIncrementalRegeneratesOnMissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hash := "sha256:abcdef1234567890"
+	writeTestManifest(t, tasksDir, hash)
+	writeTestLedgerFiles(t, dir)
+
+	// Delete one ledger file
+	if err := os.Remove(filepath.Join(dir, ledgerFiles[0])); err != nil {
+		t.Fatal(err)
+	}
+
+	if checkIncrementalSkip(tasksDir, dir, hash, false) {
+		t.Fatal("expected no skip when a ledger file is missing")
+	}
+}
+
+func TestIncrementalRegeneratesOnForce(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hash := "sha256:abcdef1234567890"
+	writeTestManifest(t, tasksDir, hash)
+	writeTestLedgerFiles(t, dir)
+
+	if checkIncrementalSkip(tasksDir, dir, hash, true) {
+		t.Fatal("expected no skip when --force is set")
+	}
+}
+
+func TestIncrementalRegeneratesOnNoManifest(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// No manifest.json written
+	writeTestLedgerFiles(t, dir)
+
+	if checkIncrementalSkip(tasksDir, dir, "sha256:anyhash", false) {
+		t.Fatal("expected no skip when manifest.json is missing")
+	}
+}
+
+func TestIncrementalRegeneratesOnEmptyLedgerFile(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hash := "sha256:abcdef1234567890"
+	writeTestManifest(t, tasksDir, hash)
+	writeTestLedgerFiles(t, dir)
+
+	// Truncate one ledger file to 0 bytes
+	if err := os.WriteFile(filepath.Join(dir, ledgerFiles[0]), []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if checkIncrementalSkip(tasksDir, dir, hash, false) {
+		t.Fatal("expected no skip when a ledger file is empty")
+	}
+}
