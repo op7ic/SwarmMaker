@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -58,6 +59,14 @@ var (
 	promptPackPath       string
 	promptPackExportPath string
 )
+
+// minReadableFiles is the basic sanity threshold: at least 1 readable text
+// file must be present before we even attempt an LLM call.
+const minReadableFiles = 1
+
+// preFlightSummaryLimit caps how much source content is sent in the
+// pre-flight validation prompt. Keeps the call fast and cheap.
+const preFlightSummaryLimit = 2000
 
 var rootCmd = &cobra.Command{
 	Use:   "swarm-me",
@@ -287,6 +296,12 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println(")")
 
+	// Basic sanity check: reject empty directories before wasting time on discovery.
+	// Content quality is judged by the LLM pre-flight call later in the pipeline.
+	if err := checkInputQualityGate(ingested, complexity); err != nil {
+		return err
+	}
+
 	tools := discovery.FindAllLLMs()
 	primary, critic, routingEvents, err := selectLLMs(tools)
 	if err != nil {
@@ -457,6 +472,16 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	}
 	green.Printf("  IR manifest: %s\n", irManifestPath)
 	green.Printf("  Detailed IR: %s\n", artifactPaths.ManifestPath)
+	fmt.Println()
+
+	// Pre-flight source validation: one short LLM call to judge whether the
+	// source material is rich enough to produce useful agent skills. Costs ~$0.01
+	// to potentially save 9+ expensive generation calls ($1-5) on garbage input.
+	bold.Println("[Pre-flight] Validating source material sufficiency...")
+	if err := runPreFlightValidation(exec, ingested, complexity); err != nil {
+		return err
+	}
+	green.Println("  Source material: SUFFICIENT")
 	fmt.Println()
 
 	// Phase 3: Run task-ledger generation tasks.
@@ -1309,11 +1334,37 @@ func writeValidationReport(outputDir string, r *validationReport) error {
 		b.WriteString("Advisory pre-screen findings were treated as reviewer-focus signals, not as standalone approval blockers.\n")
 	}
 
+	// Risk Analysis: compounding error across process steps
+	skillsPath := filepath.Join(outputDir, "skills.md")
+	if skillsBytes, readErr := os.ReadFile(skillsPath); readErr == nil {
+		stepCount := countProcessSteps(string(skillsBytes))
+		if stepCount > 0 {
+			reliability95 := math.Pow(0.95, float64(stepCount))
+			reliability99 := math.Pow(0.99, float64(stepCount))
+			b.WriteString("\n## Risk Analysis\n\n")
+			b.WriteString(fmt.Sprintf("- **Total process steps across all skills**: %d\n", stepCount))
+			b.WriteString(fmt.Sprintf("- **Estimated compound reliability at 95%% per-step**: %.1f%%\n", reliability95*100))
+			b.WriteString(fmt.Sprintf("- **Estimated compound reliability at 99%% per-step**: %.1f%%\n", reliability99*100))
+			if stepCount > 50 {
+				b.WriteString("- **Warning**: High step count increases compounding error risk. Consider checkpoints and independent verification at key stages.\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	reportPath := filepath.Join(outputDir, "validation-report.md")
 	if err := os.WriteFile(reportPath, []byte(b.String()), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", reportPath, err)
 	}
 	return nil
+}
+
+// countProcessSteps counts numbered process step lines (e.g., "1. ", "2. ")
+// in skills content to estimate total pipeline step count.
+var processStepRe = regexp.MustCompile(`(?m)^[0-9]+\. `)
+
+func countProcessSteps(skillsContent string) int {
+	return len(processStepRe.FindAllString(skillsContent, -1))
 }
 
 // dumpValidationReportToWriter writes a compact summary of the validation report
@@ -1467,6 +1518,90 @@ func normalizeRevisionPath(path string) string {
 	clean = strings.TrimPrefix(clean, "./")
 	clean = strings.TrimPrefix(clean, "/")
 	return clean
+}
+
+// checkInputQualityGate performs a basic sanity check: at least one readable
+// file with non-empty content. This catches empty directories and avoids
+// wasting an LLM call on literally nothing. Content quality is judged by
+// the LLM-based pre-flight validation that runs later in the pipeline.
+func checkInputQualityGate(ingested *ingestion.Context, complexity *ingestion.SourceComplexity) error {
+	if len(ingested.Files) < minReadableFiles || len(ingested.Summary) == 0 {
+		detail := fmt.Sprintf("Found %d readable files with %d chars of content. "+
+			"Provide at least %d readable text file with non-empty content.",
+			len(ingested.Files), len(ingested.Summary), minReadableFiles)
+		ingested.Evidence = append(ingested.Evidence, ingestion.EvidenceEntry{
+			Phase:    ingestion.EvidencePhaseIngestion,
+			Category: ingestion.EvidenceCategoryInputQualityGate,
+			Detail:   detail,
+		})
+		return fmt.Errorf("Insufficient source material: %s", detail)
+	}
+	return nil
+}
+
+// buildPreFlightPrompt constructs the prompt for the LLM-based pre-flight
+// source validation call.
+func buildPreFlightPrompt(ingested *ingestion.Context, complexity *ingestion.SourceComplexity) string {
+	summary := ingested.Summary
+	if len(summary) > preFlightSummaryLimit {
+		summary = summary[:preFlightSummaryLimit]
+	}
+
+	sectionCount := 0
+	depth := "unknown"
+	if complexity != nil {
+		sectionCount = complexity.SectionCount
+		depth = complexity.Depth
+	}
+
+	return fmt.Sprintf(`You are evaluating whether source material is sufficient to produce a working AI agent skill bundle.
+
+Source material summary:
+- Files: %d (%d bytes)
+- Sections/headings: %d
+- Depth classification: %s
+
+Source content:
+%s
+
+Answer with exactly one of:
+SUFFICIENT: The source contains enough domain concepts, requirements, constraints, or data structures to decompose into at least one agent skill with concrete process steps.
+INSUFFICIENT: [specific explanation of what is missing and what the user should add]
+
+Do not explain your reasoning beyond the verdict line.`,
+		ingested.FileCount, ingested.TotalBytes, sectionCount, depth, summary)
+}
+
+// runPreFlightValidation sends one short LLM call to judge whether the source
+// material is rich enough to produce useful agent skills. If the LLM returns
+// INSUFFICIENT, the run is aborted before the 9-task swarm.
+func runPreFlightValidation(exec *executor.Executor, ingested *ingestion.Context, complexity *ingestion.SourceComplexity) error {
+	prompt := buildPreFlightPrompt(ingested, complexity)
+	resp, err := exec.RunPreFlight(prompt)
+	if err != nil {
+		// If the pre-flight call itself fails (timeout, LLM error), log a warning
+		// and proceed -- we don't want infrastructure failures to block the pipeline.
+		fmt.Fprintf(os.Stderr, "WARNING: pre-flight validation call failed: %v (proceeding anyway)\n", err)
+		return nil
+	}
+
+	output := strings.TrimSpace(resp.Output)
+	if strings.HasPrefix(strings.ToUpper(output), "INSUFFICIENT") {
+		// Extract the explanation after "INSUFFICIENT:" if present.
+		explanation := output
+		if idx := strings.Index(output, ":"); idx >= 0 && idx < len(output)-1 {
+			explanation = strings.TrimSpace(output[idx+1:])
+		}
+		detail := fmt.Sprintf("LLM pre-flight verdict: %s", explanation)
+		ingested.Evidence = append(ingested.Evidence, ingestion.EvidenceEntry{
+			Phase:    ingestion.EvidencePhaseIngestion,
+			Category: ingestion.EvidenceCategoryInputQualityGate,
+			Detail:   detail,
+		})
+		return fmt.Errorf("Insufficient source material for skill generation. %s", explanation)
+	}
+
+	return nil
 }
 
 // sanitizeProjectName strips characters that could cause shell injection or

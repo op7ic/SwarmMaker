@@ -605,6 +605,146 @@ func TestPreScreenDepthAdvisorySkippedForShallow(t *testing.T) {
 	}
 }
 
+// --- Anti-pattern advisory checks ---
+
+func TestPreScreenSkillsAntiPatternFirstPerson(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 5000)
+	content := "## Skill: Deployer\n- Slug: deployer\n- Summary: Deploy things\n"
+	content += "I will process the request and deploy.\n"
+	content += "When to Invoke: on deploy requests.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "moderate", SourceLength: 5000}
+	result := PreScreenFiles(dir, []string{".tasks/skills.md"}, complexity, source)
+
+	found := false
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "first-person voice") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected advisory for first-person voice, got reasons: %v", result.Reasons)
+	}
+	if result.HasConcreteFlags() {
+		t.Errorf("first-person advisory should not be concrete, got FileFlags: %v", result.FileFlags)
+	}
+}
+
+func TestPreScreenSkillsAntiPatternNoTrigger(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 5000)
+	// Skill block without "When to Invoke"
+	content := "## Skill: Deployer\n- Slug: deployer\n- Summary: Deploy things\n"
+	content += "The agent deploys the application.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "moderate", SourceLength: 5000}
+	result := PreScreenFiles(dir, []string{".tasks/skills.md"}, complexity, source)
+
+	found := false
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "Deployer") && strings.Contains(r, "When to Invoke") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected advisory for missing 'When to Invoke' in skill block, got reasons: %v", result.Reasons)
+	}
+	if result.HasConcreteFlags() {
+		t.Errorf("missing trigger advisory should not be concrete, got FileFlags: %v", result.FileFlags)
+	}
+}
+
+func TestPreScreenCleanSkillsNoAntiPatterns(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 5000)
+	content := "## Skill: Deployer\n- Slug: deployer\n- Summary: Deploy things\n"
+	content += "The agent deploys the application.\n"
+	content += "When to Invoke: on deploy requests.\n"
+	content += "1. First step\n2. Second step\n"
+	content += "Constraints: MUST DO validation.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "moderate", SourceLength: 5000}
+	result := PreScreenFiles(dir, []string{".tasks/skills.md"}, complexity, source)
+
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "first-person") {
+			t.Errorf("clean skills.md should not flag first-person, got: %s", r)
+		}
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "Deployer") && strings.Contains(r, "When to Invoke") {
+			t.Errorf("clean skills.md should not flag missing trigger, got: %s", r)
+		}
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "ALL-CAPS") {
+			t.Errorf("clean skills.md should not flag ALL-CAPS, got: %s", r)
+		}
+	}
+}
+
+func TestPreScreenSkillsAntiPatternExcessiveCaps(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 5000)
+	content := "## Skill: Deployer\n- Slug: deployer\n- Summary: Deploy things\n"
+	content += "When to Invoke: on deploy requests.\n"
+	content += "ALWAYS VALIDATE EVERY INPUT BEFORE DEPLOYMENT.\n"
+	content += "ENSURE CORRECT CONFIGURATION.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/skills.md", content)
+
+	complexity := &ingestion.SourceComplexity{Depth: "moderate", SourceLength: 5000}
+	result := PreScreenFiles(dir, []string{".tasks/skills.md"}, complexity, source)
+
+	found := false
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "ALL-CAPS") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected advisory for excessive ALL-CAPS, got reasons: %v", result.Reasons)
+	}
+}
+
+func TestPreScreenAgentsAntiPatternMissingCoordination(t *testing.T) {
+	dir := t.TempDir()
+	source := strings.Repeat("x", 5000)
+	content := "## Agent: Builder\n- Role: builds things\n"
+	content += "The agent builds the application.\n"
+	for i := 0; i < 10; i++ {
+		content += "Detail here. Source: [Section X]\n"
+	}
+	writeFile(t, dir, ".tasks/agents.md", content)
+
+	result := PreScreenFiles(dir, []string{".tasks/agents.md"}, nil, source)
+
+	found := false
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "[advisory]") && strings.Contains(r, "Builder") && strings.Contains(r, "Coordination Protocol") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected advisory for agent missing coordination, got reasons: %v", result.Reasons)
+	}
+}
+
 func TestCitationRegexMatchesBothSingularAndPlural(t *testing.T) {
 	cases := []struct {
 		input string

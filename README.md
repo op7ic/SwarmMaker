@@ -24,8 +24,9 @@ graph LR
 
 | Phase | LLM Calls | Input | Output | Failure Mode |
 |-------|-----------|-------|--------|--------------|
-| 1. Ingest | 0 | Source folder | Evidence manifest, complexity analysis | Missing/unreadable files recorded, not hidden |
+| 1. Ingest | 0 | Source folder | Evidence manifest, complexity analysis | Missing/unreadable files recorded, not hidden; basic sanity gate rejects empty dirs |
 | 2. IR Emit | 0 | Ingestion output + routing | 7 JSON artifacts under `.tasks/ir/` | Contract validation rejects malformed schemas |
+| 2.5 Pre-flight | 1 | Summary + complexity metrics | SUFFICIENT/INSUFFICIENT verdict | Rejects material too thin for skill decomposition (~$0.01) |
 | 3. Generate | 9 (parallelizable) | Compiled prompts + source | 9 `.tasks/` ledger files | Per-task retry with backoff; min-length enforcement |
 | 4. Validate | 1-10 | Generated ledger | Validation report | Multi-round: programmatic → pre-screen → adversarial review → revision (up to 3 rounds) → post-screen |
 | 5. Render | 0 | Validated ledger | Platform trees + README + installer | Atomic staged write; parity check across targets |
@@ -41,11 +42,16 @@ The swarm engine then compiles 9 prompts from the IR and source material and exe
 ```mermaid
 graph TD
     SRC["Source Folder<br/>(loose docs)"] -->|walk files,<br/>record evidence| INGEST["Ingest<br/>Complexity analysis,<br/>token budget enforcement"]
+    INGEST -->|>=1 file,<br/>>0 chars| SANITY{"Sanity Check<br/>(zero LLM cost)"}
+    SANITY -->|fail| REJECT["Reject<br/>evidence recorded,<br/>no LLM tokens spent"]
+    SANITY -->|pass| DISC_STEP["Continue"]
     SRC -->|scan PATH| DISC["Discover<br/>Probe claude, codex,<br/>gemini capabilities"]
     DISC -->|assign roles| ROUTE["Route<br/>Generator, critic,<br/>renderer assignment<br/>+ fallback accounting"]
-    INGEST -->|source IR +<br/>evidence manifest| IR["IR Emit<br/>7 versioned JSON artifacts<br/>with SHA-256 digests"]
+    DISC_STEP -->|source IR +<br/>evidence manifest| IR["IR Emit<br/>7 versioned JSON artifacts<br/>with SHA-256 digests"]
     ROUTE -->|routing decision| IR
-    IR -->|compile prompts<br/>from IR + source| SWARM["Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
+    IR -->|1 short LLM call| PREFLIGHT{"Pre-flight<br/>Validation<br/>(~$0.01)"}
+    PREFLIGHT -->|INSUFFICIENT| REJECT2["Reject<br/>LLM explains what<br/>is missing"]
+    PREFLIGHT -->|SUFFICIENT| SWARM["Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
     SWARM -->|9 ledger files| VALID{"Validate<br/>6-layer gate"}
     VALID -->|pass| RENDER["Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
     VALID -->|fail| REPORT["validation-report.md<br/>(always written)"]
@@ -188,6 +194,10 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
     evidence.json                  # Ingestion + generation evidence
     manifest.json                  # Build manifest with digests
     validation-report.md           # Full PASS/FAIL report
+  .agents/                         # Cross-platform standard path
+    skills/
+      <skill-slug>/
+        SKILL.md                   # Frontmatter + body (platform-agnostic)
   .codex/                          # Stage 2: platform-specific tree
     AGENTS.md                      # Agent router with OODA roles
     README.md                      # Skill bundle readme
@@ -197,6 +207,8 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
   README.md                        # Bundle readme
   install.sh                       # Installer (--target, --global)
 ```
+
+`.agents/skills/` is the cross-platform standard path. Every skill is emitted here in addition to the platform-specific tree, using YAML frontmatter (`name`, `description`) for discovery by skill loaders.
 
 ## Validation Pipeline
 
@@ -212,7 +224,7 @@ When the verdict is REVISE, only flagged files are regenerated in targeted revis
 
 Finally, when multiple output formats are selected, a render parity check verifies that all platform trees contain the same skills, agent roles, metadata, and source references. Drift between platforms is a hard failure.
 
-The validation report at `.tasks/validation-report.md` is written on both success and failure paths. If the report file cannot be written, it is dumped to stderr as a last resort.
+The validation report at `.tasks/validation-report.md` is written on both success and failure paths. It includes a Risk Analysis section that counts total process steps across all skills and computes compound reliability estimates at 95% and 99% per-step accuracy, surfacing compounding error risk for long pipelines. If the report file cannot be written, it is dumped to stderr as a last resort.
 
 ```mermaid
 graph TD
@@ -243,6 +255,16 @@ Source code lives in `src/swarmmaker/`. The root Makefile delegates all Go comma
 ### Release
 
 [GoReleaser](https://goreleaser.com/) builds for linux/darwin/windows on amd64/arm64. Version injected via `-X main.version={{.Version}}`.
+
+## Input Requirements
+
+The pipeline validates source material in two stages before running the 9-task generation swarm:
+
+**Stage 1: Basic sanity check (zero LLM cost).** The pipeline requires at least 1 readable text file with non-empty content. Empty directories are rejected immediately without any LLM calls.
+
+**Stage 2: Pre-flight source validation (1 LLM call, ~$0.01).** After ingestion, discovery, and routing complete, one short LLM call evaluates whether the source material contains enough domain concepts, requirements, constraints, or data structures to decompose into at least one agent skill with concrete process steps. If the LLM judges the material INSUFFICIENT, the run exits with a specific explanation of what is missing. This costs one cheap call to potentially save 9+ expensive generation calls ($1-5) on input that cannot produce useful output.
+
+Both rejections record an evidence event in `evidence.json` for auditability.
 
 ## Known Limitations
 

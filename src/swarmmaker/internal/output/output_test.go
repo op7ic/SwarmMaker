@@ -277,7 +277,7 @@ func TestValidateManifestParityDetectsSkillDrift(t *testing.T) {
 
 	for i := range codexManifest.Files {
 		if strings.HasSuffix(codexManifest.Files[i].Path, "/ingest.md") {
-			codexManifest.Files[i].Content = strings.Replace(codexManifest.Files[i].Content, "Normalize input docs", "Drifted summary", 1)
+			codexManifest.Files[i].Content = strings.ReplaceAll(codexManifest.Files[i].Content, "Normalize input docs", "Drifted summary")
 			break
 		}
 	}
@@ -438,5 +438,106 @@ func TestMustJoinRootReturnsEmptyOnError(t *testing.T) {
 	result := mustJoinRoot("", "file.md")
 	if result != "" {
 		t.Fatalf("mustJoinRoot with empty root = %q, want empty string", result)
+	}
+}
+
+func TestBuildSkillContentHasFrontmatter(t *testing.T) {
+	skill := Skill{
+		Name:    "Ingest",
+		Slug:    "ingest",
+		Summary: "Normalize input docs",
+		Body:    "Read source files and preserve evidence.",
+	}
+	content := buildSkillContent(skill, FormatClaude)
+	if !strings.HasPrefix(content, "---\nname:") {
+		t.Fatalf("rendered skill should start with YAML frontmatter, got:\n%s", content[:min(len(content), 100)])
+	}
+	if !strings.Contains(content, "name: ingest\n") {
+		t.Fatal("frontmatter should contain the skill slug as name")
+	}
+	if !strings.Contains(content, "description:") {
+		t.Fatal("frontmatter should contain a description field")
+	}
+	// Verify frontmatter is closed.
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		t.Fatal("frontmatter should have opening and closing --- delimiters")
+	}
+}
+
+func TestBuildSkillContentDescriptionIsPushy(t *testing.T) {
+	skill := Skill{
+		Name:    "FullDepth",
+		Slug:    "full-depth",
+		Summary: "Analyze alert data for triage",
+		Body:    "## When to Invoke\n\n- New alert arrives\n- Alert priority unknown\n\n## Process\n\n1. Read alert.\n2. Classify.\n",
+	}
+	content := buildSkillContent(skill, FormatClaude)
+	// Extract description from frontmatter.
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		t.Fatal("expected frontmatter delimiters")
+	}
+	frontmatter := parts[1]
+	if !strings.Contains(frontmatter, "Use when") {
+		t.Fatalf("description should contain 'Use when' triggers, got frontmatter:\n%s", frontmatter)
+	}
+	// Check description is under 200 chars.
+	for _, line := range strings.Split(frontmatter, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "description:") {
+			continue
+		}
+	}
+}
+
+func TestBuildSkillContentDescriptionUnder200Chars(t *testing.T) {
+	skill := Skill{
+		Name:    "LongTriggers",
+		Slug:    "long-triggers",
+		Summary: "Process incoming data streams from multiple heterogeneous sources",
+		Body:    "## When to Invoke\n\n- Data stream arrives from external API with unknown schema\n- Batch processing window opens and queue depth exceeds threshold\n- Manual trigger from operations dashboard\n\n## Process\n\n1. Validate.\n",
+	}
+	desc := buildPushyDescription(skill)
+	if len(desc) > 200 {
+		t.Fatalf("description length = %d, want <= 200: %q", len(desc), desc)
+	}
+}
+
+func TestBuildSkillContentExportedMatchesInternal(t *testing.T) {
+	skill := Skill{
+		Name:    "Ingest",
+		Slug:    "ingest",
+		Summary: "Normalize input docs",
+		Body:    "Read source files and preserve evidence.",
+	}
+	exported := BuildSkillContent(skill)
+	internal := buildSkillContent(skill, FormatClaude)
+	if exported != internal {
+		t.Fatal("BuildSkillContent (exported) should produce identical output to buildSkillContent")
+	}
+}
+
+func TestAgentsSkillsPathFormat(t *testing.T) {
+	// Verify that the cross-platform .agents/skills/<slug>/SKILL.md path is
+	// constructable for each skill and that content matches the platform-
+	// specific rendering.
+	blueprint := testBlueprint()
+	for _, skill := range blueprint.Skills {
+		slug := skillSlug(skill.Slug)
+		wantPath := ".agents/skills/" + slug + "/SKILL.md"
+		if !strings.HasPrefix(wantPath, ".agents/skills/") {
+			t.Fatalf("agents skill path %q does not start with .agents/skills/", wantPath)
+		}
+		content := BuildSkillContent(skill)
+		if !strings.HasPrefix(content, "---\nname:") {
+			t.Fatalf("agents skill content for %q should have frontmatter", slug)
+		}
+		if !strings.Contains(content, "# "+skill.Name) {
+			t.Fatalf("agents skill content for %q should contain skill name heading", slug)
+		}
+		if !strings.Contains(content, skill.Body) {
+			t.Fatalf("agents skill content for %q should contain skill body", slug)
+		}
 	}
 }

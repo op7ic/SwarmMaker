@@ -821,6 +821,26 @@ func TestAgentContractHasErrorHandling(t *testing.T) {
 	}
 }
 
+func TestAgentContractHasOperationalLimits(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftAgents, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftAgents): %v", err)
+	}
+	if !strings.Contains(prompt, "Operational Limits") {
+		t.Fatal("agent prompt missing Operational Limits section")
+	}
+}
+
+func TestSkillContractHasCheckpoint(t *testing.T) {
+	prompt, err := CompileDraftPrompt(DraftSkills, validIR())
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt(DraftSkills): %v", err)
+	}
+	if !strings.Contains(prompt, "CHECKPOINT") {
+		t.Fatal("skill prompt missing CHECKPOINT guidance")
+	}
+}
+
 func writePromptPack(t *testing.T, payload string) string {
 	t.Helper()
 	path := t.TempDir() + "/prompt-pack.json"

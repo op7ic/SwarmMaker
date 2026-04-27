@@ -45,6 +45,7 @@ const (
 	EvidenceCategoryTokenBudgetSkipped        EvidenceCategory = "token_budget_skipped"
 	EvidenceCategoryImplementationDecision    EvidenceCategory = "implementation_decision"
 	EvidenceCategorySandboxFallback           EvidenceCategory = "sandbox_fallback"
+	EvidenceCategoryInputQualityGate         EvidenceCategory = "input_quality_gate"
 )
 
 // EvidenceEntry records an ingestion or summary event.

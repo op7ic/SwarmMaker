@@ -73,6 +73,28 @@ var coordinationRe = regexp.MustCompile(`(?i)(?:Coordination\s+Protocol|Handoff)
 // errorHandlingRe matches error/failure handling indicators in agents output.
 var errorHandlingRe = regexp.MustCompile(`(?i)(?:Error\s+Handling|(?:error|failure)\s+handling)`)
 
+// firstPersonRe matches first-person voice at sentence boundaries.
+var firstPersonRe = regexp.MustCompile(`(?m)(?:^|[.!?]\s+)(?:I |I'll |My |We )`)
+
+// allCapsWordRe matches words of 5+ uppercase letters.
+var allCapsWordRe = regexp.MustCompile(`\b[A-Z]{5,}\b`)
+
+// allCapsWhitelist — ALL-CAPS words that are acceptable and should not be flagged.
+var allCapsWhitelist = map[string]bool{
+	"UNKNOWN": true, "OODA": true, "MUST": true, "NEVER": true,
+	"API": true, "JSON": true, "HTTP": true, "HTTPS": true,
+	"HTML": true, "REST": true, "YAML": true, "UUID": true,
+	"ASCII": true, "UTF": true, "STDIN": true, "STDOUT": true,
+	"STDERR": true, "OAUTH": true, "SAML": true, "CRUD": true,
+	"README": true, "REVIEW": true, "CHECKLIST": true,
+}
+
+// skillBlockRe matches skill block headings.
+var skillBlockRe = regexp.MustCompile(`(?m)^#{1,3}\s+Skill:\s*(.+)`)
+
+// agentBlockRe matches agent block headings.
+var agentBlockRe = regexp.MustCompile(`(?m)^#{1,3}\s+Agent:\s*(.+)`)
+
 // fabrication signal patterns — things LLMs commonly invent
 var fabricationPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:curl|wget)\s+(?:https?://)`),              // fabricated curl commands
@@ -306,6 +328,66 @@ func PreScreenFiles(outputDir string, criticalFiles []string, complexity *ingest
 				}
 				if !errorHandlingRe.MatchString(text) {
 					result.addAdvisory(f, "missing error handling (no Error Handling section found)")
+				}
+			}
+		}
+
+		// --- ANTI-PATTERN ADVISORY CHECKS (all source depths) ---
+		base := filepath.Base(f)
+
+		if base == "skills.md" {
+			// First-person voice check
+			if firstPersonRe.MatchString(text) {
+				result.addAdvisory(f, "first-person voice detected (use imperative or \"The agent will...\")")
+			}
+
+			// Per-skill "When to Invoke" section check
+			skillBlocks := skillBlockRe.FindAllStringIndex(text, -1)
+			for i, loc := range skillBlocks {
+				end := len(text)
+				if i+1 < len(skillBlocks) {
+					end = skillBlocks[i+1][0]
+				}
+				blockText := text[loc[0]:end]
+				nameMatch := skillBlockRe.FindStringSubmatch(blockText)
+				skillName := "unknown"
+				if len(nameMatch) > 1 {
+					skillName = strings.TrimSpace(nameMatch[1])
+				}
+				if !triggerRe.MatchString(blockText) {
+					result.addAdvisory(f, fmt.Sprintf("skill %q missing \"When to Invoke\" section", skillName))
+				}
+			}
+
+			// Excessive ALL-CAPS check
+			capsMatches := allCapsWordRe.FindAllString(text, -1)
+			nonWhitelisted := 0
+			for _, w := range capsMatches {
+				if !allCapsWhitelist[w] {
+					nonWhitelisted++
+				}
+			}
+			if nonWhitelisted >= 5 {
+				result.addAdvisory(f, fmt.Sprintf("excessive ALL-CAPS: %d non-standard uppercase words", nonWhitelisted))
+			}
+		}
+
+		if base == "agents.md" {
+			// Per-agent coordination/handoff section check
+			agentBlocks := agentBlockRe.FindAllStringIndex(text, -1)
+			for i, loc := range agentBlocks {
+				end := len(text)
+				if i+1 < len(agentBlocks) {
+					end = agentBlocks[i+1][0]
+				}
+				blockText := text[loc[0]:end]
+				nameMatch := agentBlockRe.FindStringSubmatch(blockText)
+				agentName := "unknown"
+				if len(nameMatch) > 1 {
+					agentName = strings.TrimSpace(nameMatch[1])
+				}
+				if !coordinationRe.MatchString(blockText) {
+					result.addAdvisory(f, fmt.Sprintf("agent %q missing \"Coordination Protocol\" or \"Handoff\" section", agentName))
 				}
 			}
 		}

@@ -968,6 +968,55 @@ func TestDumpValidationReportToWriterNilReport(t *testing.T) {
 	}
 }
 
+func TestValidationReportHasRiskAnalysis(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a skills.md with numbered process steps
+	skillsContent := "## Skill: Ingest\n\n1. Read input files.\n2. Parse headers.\n3. Validate schema.\n4. Emit records.\n\n## Skill: Analyze\n\n1. Correlate events.\n2. Score severity.\n3. Classify priority.\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "skills.md"), []byte(skillsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	report := &validationReport{
+		promptPackName:   "swarmmaker-default",
+		promptPackSource: "embedded:prompts/default_pack.json",
+		promptPackDigest: "sha256:test",
+		promptPackReview: prompts.PackReview{Approved: true},
+		evidencePath:     filepath.Join(tasksDir, "evidence.json"),
+		irManifestPath:   filepath.Join(tasksDir, "manifest.json"),
+		reviewVerdict:    "approve",
+	}
+	for _, path := range []string{report.evidencePath, report.irManifestPath} {
+		if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatalf("read validation-report.md: %v", err)
+	}
+	text := string(content)
+	for _, want := range []string{
+		"## Risk Analysis",
+		"Total process steps across all skills",
+		"Estimated compound reliability at 95%",
+		"Estimated compound reliability at 99%",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("validation report missing %q", want)
+		}
+	}
+	// 7 total steps
+	if !strings.Contains(text, "**Total process steps across all skills**: 7") {
+		t.Errorf("expected 7 process steps in report, got:\n%s", text)
+	}
+}
+
 func TestWriteValidationReportFailsOnUnwritablePath(t *testing.T) {
 	dir := t.TempDir()
 	readOnlyDir := filepath.Join(dir, "readonly")
@@ -1436,5 +1485,118 @@ func TestWriteRenderedOutputSwarmsRejectsPathTraversal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "escapes staging directory") {
 		t.Fatalf("error = %q, want 'escapes staging directory'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Input quality gate tests (basic sanity check)
+// ---------------------------------------------------------------------------
+
+func TestInputQualityGateRejectsEmptyDir(t *testing.T) {
+	ctx := &ingestion.Context{
+		Files:   nil,
+		Summary: "",
+	}
+	complexity := &ingestion.SourceComplexity{SectionCount: 0}
+	err := checkInputQualityGate(ctx, complexity)
+	if err == nil {
+		t.Fatal("expected error for empty input, got nil")
+	}
+	if !strings.Contains(err.Error(), "Insufficient") {
+		t.Fatalf("error = %q, want 'Insufficient'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "0 readable files") {
+		t.Fatalf("error = %q, want '0 readable files'", err.Error())
+	}
+	if len(ctx.Evidence) != 1 || ctx.Evidence[0].Category != ingestion.EvidenceCategoryInputQualityGate {
+		t.Fatalf("expected 1 input_quality_gate evidence entry, got %d", len(ctx.Evidence))
+	}
+}
+
+func TestInputQualityGateRejectsZeroContent(t *testing.T) {
+	ctx := &ingestion.Context{
+		Files:   []ingestion.FileEntry{{RelPath: "empty.md", Content: ""}},
+		Summary: "",
+	}
+	complexity := &ingestion.SourceComplexity{SectionCount: 5}
+	err := checkInputQualityGate(ctx, complexity)
+	if err == nil {
+		t.Fatal("expected error for zero-content input, got nil")
+	}
+	if !strings.Contains(err.Error(), "0 chars") {
+		t.Fatalf("error = %q, want '0 chars'", err.Error())
+	}
+}
+
+func TestInputQualityGateAcceptsValidInput(t *testing.T) {
+	ctx := &ingestion.Context{
+		Files:   []ingestion.FileEntry{{RelPath: "a.md", Content: "some content"}},
+		Summary: "some content",
+	}
+	complexity := &ingestion.SourceComplexity{SectionCount: 1}
+	err := checkInputQualityGate(ctx, complexity)
+	if err != nil {
+		t.Fatalf("expected nil error for valid input, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pre-flight prompt construction tests
+// ---------------------------------------------------------------------------
+
+func TestBuildPreFlightPromptIncludesMetrics(t *testing.T) {
+	ctx := &ingestion.Context{
+		FileCount:  3,
+		TotalBytes: 5000,
+		Summary:    "## Section A\nContent here.\n## Section B\nMore content.",
+	}
+	complexity := &ingestion.SourceComplexity{SectionCount: 5, Depth: "moderate"}
+	prompt := buildPreFlightPrompt(ctx, complexity)
+
+	for _, want := range []string{
+		"Files: 3",
+		"5000 bytes",
+		"Sections/headings: 5",
+		"Depth classification: moderate",
+		"SUFFICIENT:",
+		"INSUFFICIENT:",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestBuildPreFlightPromptTruncatesLongSummary(t *testing.T) {
+	longSummary := strings.Repeat("x", 5000)
+	ctx := &ingestion.Context{
+		FileCount:  1,
+		TotalBytes: 5000,
+		Summary:    longSummary,
+	}
+	complexity := &ingestion.SourceComplexity{SectionCount: 1, Depth: "shallow"}
+	prompt := buildPreFlightPrompt(ctx, complexity)
+
+	// The source content in the prompt should be truncated to preFlightSummaryLimit
+	if strings.Contains(prompt, strings.Repeat("x", preFlightSummaryLimit+1)) {
+		t.Error("prompt should truncate source content to preFlightSummaryLimit chars")
+	}
+	if !strings.Contains(prompt, strings.Repeat("x", preFlightSummaryLimit)) {
+		t.Error("prompt should include preFlightSummaryLimit chars of source content")
+	}
+}
+
+func TestBuildPreFlightPromptHandlesNilComplexity(t *testing.T) {
+	ctx := &ingestion.Context{
+		FileCount:  1,
+		TotalBytes: 100,
+		Summary:    "content",
+	}
+	prompt := buildPreFlightPrompt(ctx, nil)
+	if !strings.Contains(prompt, "Sections/headings: 0") {
+		t.Error("nil complexity should default to 0 sections")
+	}
+	if !strings.Contains(prompt, "Depth classification: unknown") {
+		t.Error("nil complexity should default to 'unknown' depth")
 	}
 }

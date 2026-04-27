@@ -325,8 +325,19 @@ func buildSkillIndexContent(spec TreeSpec, blueprint Blueprint, indexPath, entry
 	return b.String()
 }
 
+// BuildSkillContent renders a skill file with YAML frontmatter. Exported for
+// use by the cross-platform .agents/skills/ emitter in the CLI package.
+func BuildSkillContent(skill Skill) string {
+	return buildSkillContent(skill, "")
+}
+
 func buildSkillContent(skill Skill, _ Format) string {
 	var b strings.Builder
+	b.WriteString("---\nname: ")
+	b.WriteString(skillSlug(skill.Slug))
+	b.WriteString("\ndescription: >-\n  ")
+	b.WriteString(buildPushyDescription(skill))
+	b.WriteString("\n---\n")
 	b.WriteString("# ")
 	b.WriteString(skill.Name)
 	b.WriteString("\n\n")
@@ -338,6 +349,73 @@ func buildSkillContent(skill Skill, _ Format) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// buildPushyDescription builds a frontmatter description that starts with an
+// action verb from the summary and appends "Use when" triggers extracted from
+// the "When to Invoke" section. The result is kept under 200 characters.
+func buildPushyDescription(skill Skill) string {
+	summary := strings.TrimSpace(skill.Summary)
+	summary = strings.TrimRight(summary, ".!?;:")
+
+	triggers := extractWhenToInvokeTriggers(skill.Body)
+	if len(triggers) == 0 {
+		desc := summary + "."
+		if len(desc) > 200 {
+			desc = desc[:197] + "..."
+		}
+		return desc
+	}
+
+	useWhen := "Use when " + strings.Join(triggers, ", ") + "."
+	desc := summary + ". " + useWhen
+	if len(desc) <= 200 {
+		return desc
+	}
+	// Try with fewer triggers.
+	for n := len(triggers) - 1; n >= 1; n-- {
+		useWhen = "Use when " + strings.Join(triggers[:n], ", ") + "."
+		desc = summary + ". " + useWhen
+		if len(desc) <= 200 {
+			return desc
+		}
+	}
+	// Fall back to summary only.
+	desc = summary + "."
+	if len(desc) > 200 {
+		desc = desc[:197] + "..."
+	}
+	return desc
+}
+
+// extractWhenToInvokeTriggers parses bullet items from a "When to Invoke"
+// section in the skill body, returning up to 3 trigger conditions.
+func extractWhenToInvokeTriggers(body string) []string {
+	lines := strings.Split(body, "\n")
+	inSection := false
+	var triggers []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.EqualFold(trimmed, "## When to Invoke") {
+			inSection = true
+			continue
+		}
+		if inSection && strings.HasPrefix(trimmed, "## ") {
+			break
+		}
+		if inSection && strings.HasPrefix(trimmed, "- ") {
+			trigger := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			trigger = strings.TrimRight(trigger, ".!?;:")
+			trigger = strings.ToLower(trigger[:1]) + trigger[1:]
+			if trigger != "" {
+				triggers = append(triggers, trigger)
+			}
+			if len(triggers) >= 3 {
+				break
+			}
+		}
+	}
+	return triggers
 }
 
 func sortedDocs(docs []Document) []Document {

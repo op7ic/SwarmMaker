@@ -204,6 +204,26 @@ func (e *Executor) RunCritic(prompt string) (*Response, error) {
 	return e.runWithRetry(e.Critic, prompt, "critic")
 }
 
+// RunPreFlight sends a short prompt to the primary LLM with a 30-second
+// timeout and no minimum output length validation. Used for lightweight
+// pre-flight checks (e.g., input quality gate) where the expected response
+// is a single verdict line.
+func (e *Executor) RunPreFlight(prompt string) (*Response, error) {
+	if err := e.validateTool(e.Primary); err != nil {
+		return &Response{Tool: e.Primary.Name, Prompt: prompt, Error: err}, err
+	}
+	origTimeout := e.Timeout
+	e.Timeout = 30 * time.Second
+	defer func() { e.Timeout = origTimeout }()
+
+	resp, err := e.run(e.Primary, prompt, "preflight", "")
+	if err != nil {
+		return resp, err
+	}
+	// Skip validateOutput -- pre-flight responses are intentionally short.
+	return resp, nil
+}
+
 // RunPrimaryToFile runs the primary LLM, instructing it to write output to outputFile.
 // After execution, reads the file. Falls back to stdout if file wasn't created.
 func (e *Executor) RunPrimaryToFile(prompt, outputFile string) (*Response, error) {
