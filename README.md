@@ -40,13 +40,13 @@ The swarm engine then compiles 9 prompts from the IR and source material and exe
 
 ```mermaid
 graph TD
-    SRC["Source Folder<br/>(loose docs)"] --> INGEST["Ingest<br/>Walk files, record evidence,<br/>analyze complexity"]
-    SRC --> DISC["Discover<br/>Scan PATH for<br/>claude, codex, gemini"]
-    DISC --> ROUTE["Route<br/>Assign generator, critic,<br/>renderer roles"]
-    INGEST --> IR["IR Emit<br/>7 versioned JSON artifacts<br/>under .tasks/ir/"]
-    ROUTE --> IR
-    IR -->|prompts compiled<br/>from IR + source| SWARM["Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
-    SWARM --> VALID{"Validate<br/>Programmatic<br/>Pre-screen<br/>Adversarial review<br/>Revision (max 3)<br/>Post-screen<br/>Parity check"}
+    SRC["Source Folder<br/>(loose docs)"] -->|walk files,<br/>record evidence| INGEST["Ingest<br/>Complexity analysis,<br/>token budget enforcement"]
+    SRC -->|scan PATH| DISC["Discover<br/>Probe claude, codex,<br/>gemini capabilities"]
+    DISC -->|assign roles| ROUTE["Route<br/>Generator, critic,<br/>renderer assignment<br/>+ fallback accounting"]
+    INGEST -->|source IR +<br/>evidence manifest| IR["IR Emit<br/>7 versioned JSON artifacts<br/>with SHA-256 digests"]
+    ROUTE -->|routing decision| IR
+    IR -->|compile prompts<br/>from IR + source| SWARM["Swarm<br/>9 tasks, concurrent,<br/>round-robin across LLMs"]
+    SWARM -->|9 ledger files| VALID{"Validate<br/>6-layer gate"}
     VALID -->|pass| RENDER["Render<br/>.claude/ .codex/ .gemini/<br/>README.md + install.sh"]
     VALID -->|fail| REPORT["validation-report.md<br/>(always written)"]
 ```
@@ -200,28 +200,32 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
 
 ## Validation Pipeline
 
+Every generated ledger passes through six validation layers before output is written. No layer can be skipped.
+
+The pipeline starts with zero-LLM-cost programmatic checks: file existence, minimum sizes, markdown link integrity, template leak detection (16 known patterns that LLMs might copy from prompt instructions), and meta-commentary filtering (rejecting outputs that describe what they did instead of producing the artifact).
+
+Next, a pre-screen gate runs depth-adaptive heuristics. Shallow sources get lenient citation checks. Deep sources (like our alert triage example with 33 sections) require higher citation density using a sub-linear formula, dimension coverage verification, and amplification ratio checks. Fabrication patterns and boilerplate injection are checked regardless of depth. The pre-screen produces per-file flags: concrete flags (specific problems like "low citation density: 24 citations in 20K chars, expect 25") block the build, while advisory flags (like "missing Process section") inform the reviewer without blocking.
+
+If concrete flags exist, they are forwarded to the adversarial LLM review -- a separate call to the critic provider that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings. Critically, concrete pre-screen findings block approval even if the reviewer says APPROVE -- the programmatic layer has veto power over the LLM.
+
+When the verdict is REVISE, only flagged files are regenerated in targeted revision rounds. After each round, a post-revision re-screen checks whether the revision improved things. If the flag count decreased, another round runs (up to 3 total). If the count didn't decrease (regression), the loop stops immediately to avoid wasting LLM calls on revisions that aren't helping.
+
+Finally, when multiple output formats are selected, a render parity check verifies that all platform trees contain the same skills, agent roles, metadata, and source references. Drift between platforms is a hard failure.
+
+The validation report at `.tasks/validation-report.md` is written on both success and failure paths. If the report file cannot be written, it is dumped to stderr as a last resort.
+
 ```mermaid
 graph TD
-    LEDGER["Generated Ledger<br/>(9 .tasks/ files)"] --> PROG["Programmatic Checks<br/>(0 LLM calls)<br/>File existence, link integrity,<br/>template leak detection"]
-    PROG --> PRE["Pre-Screen Gate<br/>(0 LLM calls)<br/>Citation density, fabrication,<br/>boilerplate, amplification<br/>Adapts to source depth"]
-    PRE --> REVIEW["Adversarial LLM Review<br/>(1 LLM call)<br/>Cross-file consistency,<br/>source fidelity, UNKNOWN gates"]
+    LEDGER["Generated Ledger<br/>(9 .tasks/ files)"] --> PROG["Programmatic Checks<br/>File existence, link integrity,<br/>template leak detection,<br/>meta-commentary filtering"]
+    PROG --> PRE["Pre-Screen Gate<br/>Citation density, fabrication,<br/>boilerplate, amplification<br/>Adapts to source depth"]
+    PRE --> REVIEW["Adversarial LLM Review<br/>Cross-file consistency,<br/>source fidelity, UNKNOWN gates"]
     REVIEW -->|APPROVE| PARITY
-    REVIEW -->|REVISE| REVISE["Targeted Revision<br/>(0-N LLM calls)<br/>Only flagged files"]
-    REVISE --> RESCREEN["Post-Revision Re-Screen<br/>Regression detection"]
-    RESCREEN -->|flags remain<br/>count decreased| REVISE
-    RESCREEN -->|clean or max 3 rounds| PARITY
-    PARITY{"Render Parity Check<br/>(0 LLM calls)<br/>Cross-platform consistency"} --> RESULT["PASS / FAIL"]
+    REVIEW -->|REVISE| REVISE["Targeted Revision<br/>Only flagged files regenerated"]
+    REVISE --> RESCREEN["Post-Revision Re-Screen<br/>Regression detection:<br/>stops if flags not decreasing"]
+    RESCREEN -->|improved,<br/>flags remain| REVISE
+    RESCREEN -->|clean or<br/>max 3 rounds| PARITY
+    PARITY{"Render Parity Check<br/>Cross-platform skill/agent<br/>consistency"} --> RESULT["PASS / FAIL"]
 ```
-
-Every generated ledger passes through six validation layers before output is written. No layer can be skipped. The pipeline first runs zero-LLM-cost programmatic checks (file existence, link integrity, template leak detection using 16 known patterns, and meta-commentary filtering). It then runs a pre-screen gate that adapts to source depth: shallow sources get lenient citation checks, deep sources require higher citation density (sub-linear formula to avoid penalising long documents), dimension coverage, and amplification ratio checks. Fabrication patterns and boilerplate injection are checked regardless of depth.
-
-If the pre-screen finds concrete file-level flags, those are forwarded to the adversarial LLM review -- a separate LLM call (using the critic provider) that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings.
-
-When the verdict is REVISE, only flagged files are regenerated in targeted revision rounds. After each round, the post-revision re-screen re-evaluates the revised files. If the flag count decreased, another round runs (up to 3 total). If the flag count did not decrease (regression), the loop stops immediately. Concrete pre-screen findings block approval even if the adversarial reviewer returns APPROVE -- the programmatic layer has veto power over the LLM reviewer.
-
-Finally, when multiple output formats are selected, a render parity check verifies that all platform trees (`.claude/`, `.codex/`, `.gemini/`) contain the same skills, agent roles, metadata, and source references. Drift between platforms is a hard failure.
-
-The validation report at `.tasks/validation-report.md` is written on both success and failure paths. If the report file itself cannot be written, the report is dumped to stderr as a last resort.
 
 ## Development
 
