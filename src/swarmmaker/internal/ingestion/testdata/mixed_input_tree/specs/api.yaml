@@ -1,0 +1,6 @@
+service: swarm-maker
+version: v1
+actions:
+  - ingest
+  - critique
+  - render

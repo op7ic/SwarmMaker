@@ -1,0 +1,9 @@
+Random ideas and questions:
+
+- Should we add a Slack bot for ticket creation?
+- Need to investigate if we can auto-close P3 tickets after 30 days of inactivity
+- The SLA dashboard needs a "trending" view for weekly compliance
+- Ask platform team about rate limit increases for the bulk import API
+- Consider adding webhook support for ticket status changes
+- Need runbook for database failover procedure
+- Q: Can we integrate with Jira for cross-team escalations?

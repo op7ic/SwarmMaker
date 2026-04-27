@@ -1,0 +1,3 @@
+1. Harden ingestion
+2. Record evidence
+3. Preserve readable docs
