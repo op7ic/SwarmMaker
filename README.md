@@ -288,6 +288,10 @@ Both rejections record an evidence event in `evidence.json` for auditability.
 2. **Tool synthesis is planning-only.** The tool synthesis module decides whether tools are needed and what language they should use, but does not generate executable code. Source code files are now detected and referenced in generated skills, but executable tool code is not synthesized.
 3. **Citation density heuristic.** The pre-screen uses a sub-linear formula for expected citation count. Very long documents (>50K chars) may trigger false positives.
 
+## Design References
+
+SwarmMaker's architecture is informed by current agent engineering research. See [docs/agent-engineering-reference.md](docs/agent-engineering-reference.md) for the design principles, cognitive limits, tool design patterns, and anti-patterns that shaped the pipeline.
+
 ## License
 
 See [LICENSE](LICENSE).
