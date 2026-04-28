@@ -198,9 +198,9 @@ func TestClassifyBinaryFile(t *testing.T) {
 	}
 }
 
-func TestTokenBudgetReducedForContextRot(t *testing.T) {
-	if TokenBudget != 140_000 {
-		t.Errorf("TokenBudget = %d, want 140000 (70%% of 200K for context rot discount)", TokenBudget)
+func TestTokenBudgetValue(t *testing.T) {
+	if TokenBudget != 200_000 {
+		t.Errorf("TokenBudget = %d, want 200000", TokenBudget)
 	}
 }
 

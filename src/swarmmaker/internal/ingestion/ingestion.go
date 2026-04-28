@@ -24,12 +24,12 @@ import (
 
 const maxFileSize = 1024 * 1024 // 1MB per file max
 
-// TokenBudget is the maximum source material size in characters (~35K tokens).
-// Set to 70% of the 200K char window to account for context rot -- research
-// shows all LLMs degrade non-uniformly before their stated context limit
-// (Chroma Research, 2025). The remaining 30% is reserved for prompt overhead
-// (contracts, citations, IR metadata) and generation headroom.
-const TokenBudget = 140_000
+// TokenBudget is the maximum source material size in characters (~50K tokens).
+// This leaves headroom for prompt overhead (contracts, citations, IR metadata)
+// and generation output within the model's context window. Frontier models
+// handle well beyond this limit, but keeping source material bounded ensures
+// prompt compilation stays fast and token costs stay predictable.
+const TokenBudget = 200_000
 
 // FileEntry represents a single ingested file.
 type FileEntry struct {

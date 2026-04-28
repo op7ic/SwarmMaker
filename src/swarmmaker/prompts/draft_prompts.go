@@ -71,7 +71,6 @@ func promptHeader(ir PromptIR, title string, planning bool) string {
 	b.WriteString(strictRules(planning))
 	b.WriteString(concisenessContract())
 	b.WriteString(outputOnlyMarkdown())
-	b.WriteString(constraintReminder())
 	return b.String()
 }
 

@@ -64,15 +64,11 @@ An agent runs tools in a loop to achieve a goal. Most production systems are **w
 
 Agent = LLM + Planning + Memory + Tool use, with reflection as the loop primitive. Ablating any one of observation, reflection, or planning collapses long-horizon coherence (Park et al., UIST 2023).
 
-## Cognitive Limits
+## Context and Reliability
 
-Three problems dictate every design decision:
+Frontier models (GPT-5.4, Claude Opus 4.x, Gemini 3 Pro) with 1M+ context windows have largely resolved the "lost in the middle" attention degradation that affected earlier models. SwarmMaker's typical prompts are 15-20K chars, well within reliable capacity for any current model.
 
-**Lost in the middle.** Performance is highest when information sits at the start or end of context, U-shaped degradation in the middle. SwarmMaker addresses this with constraint re-foregrounding: critical rules are restated after source material, right before the LLM generates.
-
-**Context rot.** All models degrade before their stated context limit. Effective reliable capacity is roughly 60-70% of the window. SwarmMaker sets TokenBudget to 70% of the raw window.
-
-**Compounding error.** Per-step accuracy `p` over `N` steps yields `p^N` reliability. At 95% per step, a 20-step pipeline has ~36% expected success. SwarmMaker surfaces this in the validation report's Risk Analysis section and uses CHECKPOINT markers in skill process steps.
+The one constraint that remains model-independent is **compounding error**: per-step accuracy `p` over `N` steps yields `p^N` reliability. This is mathematics, not a model limitation. A 78-step skill pipeline at 99% per-step accuracy has ~45.7% expected end-to-end success. SwarmMaker surfaces this in the validation report's Risk Analysis section so users can assess whether their generated pipeline needs intermediate checkpoints or independent verification at key stages.
 
 ## Tool Design Principles
 

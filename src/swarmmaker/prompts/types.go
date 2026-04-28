@@ -325,14 +325,3 @@ func outputOnlyMarkdown() string {
 	return "Output markdown only. The caller writes your response to a file; non-markdown content will corrupt the artifact. No preamble. No commentary. No wrapper text.\n\n"
 }
 
-func constraintReminder() string {
-	return strings.Join([]string{
-		"REMINDER (these rules override everything above):",
-		"- Every claim must cite its source file. No citation = no claim.",
-		"- Missing facts become UNKNOWN. Never invent data, endpoints, or commands.",
-		"- Write the artifact body directly. No preamble, no commentary, no status notes.",
-		"- Embed data schemas inline for skills. Reference by citation for other artifacts.",
-		"- Each Process step must include failure handling and source citation.",
-		"",
-	}, "\n")
-}

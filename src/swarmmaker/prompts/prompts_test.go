@@ -842,25 +842,14 @@ func TestSkillContractHasCheckpoint(t *testing.T) {
 	}
 }
 
-func TestConstraintReminderPresent(t *testing.T) {
+func TestPromptDoesNotContainRedundantReminder(t *testing.T) {
 	ir := validIR()
-	for _, kind := range requiredDraftKinds() {
-		t.Run(string(kind), func(t *testing.T) {
-			prompt, err := CompileDraftPrompt(kind, ir)
-			if err != nil {
-				t.Fatalf("CompileDraftPrompt(%s): %v", kind, err)
-			}
-			if !strings.Contains(prompt, "REMINDER (these rules override everything above)") {
-				t.Fatalf("prompt %s missing REMINDER block", kind)
-			}
-			// Verify the reminder appears after outputOnlyMarkdown and before
-			// the template body (which comes after artifactOutputContract).
-			reminderIdx := strings.Index(prompt, "REMINDER (these rules override everything above)")
-			markdownIdx := strings.Index(prompt, "Output markdown only")
-			if reminderIdx < markdownIdx {
-				t.Fatalf("prompt %s: REMINDER appears before outputOnlyMarkdown", kind)
-			}
-		})
+	prompt, err := CompileDraftPrompt(DraftContext, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt: %v", err)
+	}
+	if strings.Contains(prompt, "REMINDER (these rules override everything above)") {
+		t.Fatal("prompt should not contain redundant reminder block")
 	}
 }
 
