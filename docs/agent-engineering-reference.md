@@ -56,7 +56,7 @@ graph TD
     PARITY --> RESULT["PASS / FAIL"]
 ```
 
-The validation report includes a per-task Cost Breakdown table (input/output tokens and estimated USD per LLM call) and a Risk Analysis section that computes compound reliability estimates based on total process steps across all skills. Each skill also emits an `mcp_tool.json` file with an MCP-compatible tool definition for integration with MCP tool servers.
+The validation report includes a per-task Cost Breakdown table (input/output tokens and estimated USD per LLM call) and a Risk Analysis section that computes compound reliability estimates based on total process steps across all skills. Each skill also emits an `mcp_tool.json` file with an MCP-compatible tool definition for integration with MCP tool servers. The input schema is LLM-generated via a fenced JSON Schema block mandated by the skill compiler contract, not regex-parsed from prose.
 
 ## Core Definition
 
