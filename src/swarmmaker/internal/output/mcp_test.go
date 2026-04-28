@@ -130,6 +130,119 @@ func TestBuildMCPToolH3Section(t *testing.T) {
 	}
 }
 
+func TestBuildMCPToolFencedJSON(t *testing.T) {
+	// Primary path: skill has a fenced JSON block in MCP Input Schema section
+	skill := Skill{
+		Name:    "Alert Triage",
+		Slug:    "alert-triage",
+		Summary: "Classifies incoming alerts",
+		Body: `### When to Invoke
+- Alert arrives from upstream
+
+### Inputs Required
+- config_path (str): Path to config file
+- alert_data (object): Raw alert payload with nested fields
+
+### MCP Input Schema
+` + "```json" + `
+{"type": "object", "properties": {"config_path": {"type": "string", "description": "Path to AMP config file"}, "alert_data": {"type": "object", "description": "Raw alert payload"}, "severity": {"type": "integer", "description": "Alert severity 0-4"}, "tags": {"type": "array", "description": "Associated IOC tags"}}, "required": ["config_path", "alert_data"]}
+` + "```" + `
+
+### Process
+1. Parse alert
+`,
+	}
+	def := BuildMCPTool(skill)
+	if len(def.InputSchema.Properties) != 4 {
+		t.Fatalf("expected 4 properties from fenced JSON, got %d: %+v",
+			len(def.InputSchema.Properties), def.InputSchema.Properties)
+	}
+	if p := def.InputSchema.Properties["config_path"]; p.Type != "string" || p.Description != "Path to AMP config file" {
+		t.Errorf("config_path mismatch: %+v", p)
+	}
+	if p := def.InputSchema.Properties["severity"]; p.Type != "integer" {
+		t.Errorf("severity should be integer, got %+v", p)
+	}
+	if p := def.InputSchema.Properties["tags"]; p.Type != "array" {
+		t.Errorf("tags should be array, got %+v", p)
+	}
+	if len(def.InputSchema.Required) != 2 {
+		t.Errorf("expected 2 required fields, got %d: %v", len(def.InputSchema.Required), def.InputSchema.Required)
+	}
+}
+
+func TestBuildMCPToolFencedJSONH2(t *testing.T) {
+	// Fenced JSON with ## heading (non-nested skills)
+	skill := Skill{
+		Name:    "Simple",
+		Slug:    "simple",
+		Summary: "Simple skill",
+		Body: `## MCP Input Schema
+` + "```json" + `
+{"type": "object", "properties": {"name": {"type": "string", "description": "User name"}}}
+` + "```" + `
+`,
+	}
+	def := BuildMCPTool(skill)
+	if len(def.InputSchema.Properties) != 1 {
+		t.Fatalf("expected 1 property, got %d", len(def.InputSchema.Properties))
+	}
+	if p := def.InputSchema.Properties["name"]; p.Type != "string" {
+		t.Errorf("name should be string, got %+v", p)
+	}
+}
+
+func TestBuildMCPToolFencedJSONTakesPrecedence(t *testing.T) {
+	// When both fenced JSON and bullet list exist, fenced JSON wins
+	skill := Skill{
+		Name:    "Both",
+		Slug:    "both",
+		Summary: "Has both formats",
+		Body: `### Inputs Required
+- name (string): The name
+- age (integer): The age
+
+### MCP Input Schema
+` + "```json" + `
+{"type": "object", "properties": {"full_name": {"type": "string", "description": "Full name"}, "birth_year": {"type": "integer", "description": "Year of birth"}, "active": {"type": "boolean", "description": "Is active"}}}
+` + "```" + `
+`,
+	}
+	def := BuildMCPTool(skill)
+	// Should have 3 from fenced JSON, not 2 from bullets
+	if len(def.InputSchema.Properties) != 3 {
+		t.Fatalf("expected 3 properties from fenced JSON (not 2 from bullets), got %d: %+v",
+			len(def.InputSchema.Properties), def.InputSchema.Properties)
+	}
+	if _, ok := def.InputSchema.Properties["full_name"]; !ok {
+		t.Error("expected full_name from fenced JSON, not name from bullets")
+	}
+}
+
+func TestBuildMCPToolInvalidFencedJSONFallsBack(t *testing.T) {
+	// If fenced JSON is malformed, fall back to bullet parsing
+	skill := Skill{
+		Name:    "Bad JSON",
+		Slug:    "bad-json",
+		Summary: "Has bad JSON but good bullets",
+		Body: `### Inputs Required
+- name (string): The name
+
+### MCP Input Schema
+` + "```json" + `
+{invalid json here}
+` + "```" + `
+`,
+	}
+	def := BuildMCPTool(skill)
+	if len(def.InputSchema.Properties) != 1 {
+		t.Fatalf("expected 1 property from bullet fallback, got %d", len(def.InputSchema.Properties))
+	}
+	if _, ok := def.InputSchema.Properties["name"]; !ok {
+		t.Error("expected name from bullet fallback")
+	}
+}
+
 func TestNormalizeMCPType(t *testing.T) {
 	tests := []struct {
 		input, want string

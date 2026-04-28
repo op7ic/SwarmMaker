@@ -4,8 +4,10 @@
 // Github: https://github.com/op7ic/SwarmMaker
 //
 // MCP tool definition builder.
-// Parses skill bodies to extract parameter definitions and trigger conditions,
-// then builds MCP-compatible tool definition JSON for each skill.
+// Extracts MCP-compatible tool definitions from generated skills. The primary
+// extraction path reads the fenced JSON block from the "MCP Input Schema"
+// section that the skill compiler contract mandates. A regex fallback handles
+// legacy skills that pre-date the contract addition.
 
 
 package output
@@ -57,7 +59,6 @@ func BuildMCPToolJSON(skill Skill) ([]byte, error) {
 }
 
 func buildMCPDescription(skill Skill) string {
-	// Use summary + "When to Invoke" triggers
 	desc := strings.TrimSpace(skill.Summary)
 	triggers := extractWhenToInvokeTriggers(skill.Body)
 	if len(triggers) > 0 {
@@ -69,21 +70,108 @@ func buildMCPDescription(skill Skill) string {
 	return desc
 }
 
-// inputParamRe matches lines like "- field_name (type): description" or "- field_name: description"
+// buildMCPInputSchema extracts the input schema from a skill body.
+// Primary path: parse the fenced JSON block from "MCP Input Schema" section.
+// Fallback: regex-parse "Inputs Required" bullet lines for legacy skills.
+func buildMCPInputSchema(skill Skill) MCPInputSchema {
+	// Primary: extract fenced JSON block from MCP Input Schema section
+	if schema, ok := extractFencedMCPSchema(skill.Body); ok {
+		return schema
+	}
+	// Fallback: regex-parse Inputs Required section for legacy skills
+	return extractInputsFromBullets(skill.Body)
+}
+
+// fencedJSONRe matches ```json ... ``` blocks, capturing the JSON content.
+var fencedJSONRe = regexp.MustCompile("(?s)```json\\s*\n(.*?)```")
+
+// extractFencedMCPSchema looks for a fenced JSON block in or after the
+// "MCP Input Schema" section heading and parses it as MCPInputSchema.
+func extractFencedMCPSchema(body string) (MCPInputSchema, bool) {
+	lines := strings.Split(body, "\n")
+	inSection := false
+	var sectionContent strings.Builder
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if lower == "## mcp input schema" || lower == "### mcp input schema" {
+			inSection = true
+			continue
+		}
+		if inSection && (strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ")) {
+			break
+		}
+		if inSection {
+			sectionContent.WriteString(line)
+			sectionContent.WriteString("\n")
+		}
+	}
+
+	if !inSection {
+		// No dedicated section — scan the entire body for any fenced JSON block
+		// that looks like a JSON Schema (has "type" and "properties" keys).
+		return extractSchemaFromAnyFencedBlock(body)
+	}
+
+	content := sectionContent.String()
+	matches := fencedJSONRe.FindStringSubmatch(content)
+	if len(matches) < 2 {
+		return MCPInputSchema{Type: "object"}, false
+	}
+
+	return parseMCPSchemaJSON(matches[1])
+}
+
+// extractSchemaFromAnyFencedBlock scans the full body for a fenced JSON block
+// that contains "properties" — indicating it's a JSON Schema for MCP.
+func extractSchemaFromAnyFencedBlock(body string) (MCPInputSchema, bool) {
+	allMatches := fencedJSONRe.FindAllStringSubmatch(body, -1)
+	for _, matches := range allMatches {
+		if len(matches) < 2 {
+			continue
+		}
+		jsonStr := strings.TrimSpace(matches[1])
+		if strings.Contains(jsonStr, "\"properties\"") {
+			if schema, ok := parseMCPSchemaJSON(jsonStr); ok {
+				return schema, true
+			}
+		}
+	}
+	return MCPInputSchema{Type: "object"}, false
+}
+
+// parseMCPSchemaJSON parses a JSON string into MCPInputSchema.
+func parseMCPSchemaJSON(jsonStr string) (MCPInputSchema, bool) {
+	jsonStr = strings.TrimSpace(jsonStr)
+	var schema MCPInputSchema
+	if err := json.Unmarshal([]byte(jsonStr), &schema); err != nil {
+		return MCPInputSchema{Type: "object"}, false
+	}
+	if schema.Type == "" {
+		schema.Type = "object"
+	}
+	if schema.Properties == nil {
+		return MCPInputSchema{Type: "object"}, false
+	}
+	return schema, true
+}
+
+// --- Fallback: regex-based extraction for legacy skills ---
+
+// inputParamRe matches lines like "- field_name (type): description"
 var inputParamRe = regexp.MustCompile(`^-\s+` + "`?" + `(\w[\w._-]*)` + "`?" + `\s*(?:\(([^)]+)\))?\s*(?::\s*(.+))?$`)
 
-// inputParamBacktickRe matches "- `field_name: type`" patterns common in generated skills
+// inputParamBacktickRe matches "- `field_name: type`" patterns
 var inputParamBacktickRe = regexp.MustCompile("^-\\s+`(\\w[\\w._-]*)(?::\\s*(\\w+))?`\\s*(.*)")
 
-func buildMCPInputSchema(skill Skill) MCPInputSchema {
+func extractInputsFromBullets(body string) MCPInputSchema {
 	schema := MCPInputSchema{
 		Type:       "object",
 		Properties: make(map[string]MCPProperty),
 	}
 
-	// Extract parameters from "Inputs Required" section.
-	// Generated skills use ### (h3) under ## Instructions, so match both ## and ###.
-	lines := strings.Split(skill.Body, "\n")
+	lines := strings.Split(body, "\n")
 	inSection := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -98,7 +186,6 @@ func buildMCPInputSchema(skill Skill) MCPInputSchema {
 		if !inSection || !strings.HasPrefix(trimmed, "- ") {
 			continue
 		}
-		// Try backtick format first: - `config_path: str` with description
 		if matches := inputParamBacktickRe.FindStringSubmatch(trimmed); len(matches) >= 2 {
 			name := matches[1]
 			propType := "string"
@@ -109,13 +196,9 @@ func buildMCPInputSchema(skill Skill) MCPInputSchema {
 			if len(matches) >= 4 {
 				desc = strings.TrimSpace(matches[3])
 			}
-			schema.Properties[name] = MCPProperty{
-				Type:        propType,
-				Description: desc,
-			}
+			schema.Properties[name] = MCPProperty{Type: propType, Description: desc}
 			continue
 		}
-		// Try plain format: - field_name (type): description
 		if matches := inputParamRe.FindStringSubmatch(trimmed); len(matches) >= 2 {
 			name := matches[1]
 			propType := "string"
@@ -126,10 +209,7 @@ func buildMCPInputSchema(skill Skill) MCPInputSchema {
 			if len(matches) >= 4 {
 				desc = strings.TrimSpace(matches[3])
 			}
-			schema.Properties[name] = MCPProperty{
-				Type:        propType,
-				Description: desc,
-			}
+			schema.Properties[name] = MCPProperty{Type: propType, Description: desc}
 		}
 	}
 
