@@ -495,7 +495,7 @@ func (e *Executor) runWithModel(tool discovery.LLMTool, prompt, role, outputFile
 
 	// When the prompt exceeds the size threshold, deliver it via stdin
 	// instead of as a CLI argument to avoid Linux E2BIG (MAX_ARG_STRLEN = 131072).
-	useStdin := len(prompt) > promptSizeThreshold
+	useStdin := len(prompt) > promptSizeThreshold || tool.Name == "ollama"
 	sandboxOK := tool.Name == "codex" && e.CodexSandboxAvailable()
 	if tool.Name == "codex" && !sandboxOK {
 		fmt.Fprintf(os.Stderr, "WARNING: bubblewrap sandbox unavailable; using --dangerously-bypass-approvals-and-sandbox\n")
@@ -831,6 +831,15 @@ func buildArgs(toolName, prompt, workDir, model, outputFile string, useStdin, sa
 		if model != "" {
 			args = append(args, "--model", model)
 		}
+		return args, nil
+	case "ollama":
+		// ollama run <model> --nowordwrap
+		// Prompt is always delivered via stdin.
+		// model is required for ollama (unlike other providers with defaults).
+		if model == "" {
+			model = "llama3.1"
+		}
+		args := []string{"run", model, "--nowordwrap"}
 		return args, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", toolName)

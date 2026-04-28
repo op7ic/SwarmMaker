@@ -251,6 +251,24 @@ func ReadFolder(rootPath string) (*Context, error) {
 
 		contentStr := string(content)
 
+		// Check for OpenAPI/Swagger spec before generic classification.
+		if isOpenAPISpec(contentStr, ext) {
+			apiResult, parseErr := parseOpenAPISpec(contentStr)
+			if parseErr == nil && len(apiResult.Endpoints) > 0 {
+				structured := formatOpenAPIAsStructured(apiResult)
+				ctx.Files = append(ctx.Files, FileEntry{
+					RelPath:  relPath,
+					AbsPath:  path,
+					Content:  structured,
+					Size:     size,
+					FileType: "openapi",
+				})
+				ctx.TotalBytes += size
+				return nil
+			}
+			// If parse fails, fall through to normal text classification
+		}
+
 		// Classify reference data: files that are lookup tables (hashes, keywords,
 		// one-value-per-line lists) get recorded as evidence but their content is
 		// NOT embedded in the prompt summary. Only a summary line is included.

@@ -113,7 +113,7 @@ Measured on a real 4-file input (10KB source material) producing a codex skill b
 | Output size (skills.md) | ~62 KB | ~88 KB | Varies by generator |
 | Skill count | ~11 | ~10 | Varies by generator |
 
-Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and Required/Prohibited constraints. The validation report includes a cost estimate (total LLM calls, estimated tokens, approximate dollar cost).
+Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and Required/Prohibited constraints. The validation report includes a per-task cost breakdown table (input/output tokens and estimated USD per LLM call).
 
 Scaling: generation time is O(N) in task count (currently fixed at 9). Prompt size is O(S) in source material size. Revision rounds are bounded at 3 with regression detection.
 
@@ -153,6 +153,7 @@ At least one LLM CLI:
 - [claude](https://docs.anthropic.com/en/docs/claude-cli) (Anthropic)
 - [codex](https://github.com/openai/codex) (OpenAI)
 - [gemini](https://ai.google.dev/gemini-api/docs/cli) (Google)
+- [ollama](https://ollama.com/) (Local LLMs — offline/free usage)
 
 Check availability: `swarm-maker discover`
 
@@ -167,8 +168,8 @@ swarm-maker --input <dir> --model <provider> --output-swarm <format> [flags]
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--input <dir>` | Yes | Source documentation folder |
-| `--model <provider>` | Yes | Generator LLM: `codex`, `claude`, or `gemini` |
-| `--output-swarm <format>` | Yes | Target(s): `claude`, `codex`, `gemini`, `all`, or comma-separated |
+| `--model <provider>` | Yes | Generator LLM: `codex`, `claude`, `gemini`, or `ollama` |
+| `--output-swarm <format>` | Yes | Target(s): `claude`, `codex`, `gemini`, `all`, comma-separated, or `custom:<spec.yaml>` |
 | `-o, --output-folder <dir>` | No | Output folder (default: `.`) |
 | `--critique <provider>` | No | Critic LLM (auto-detected if omitted) |
 | `-n, --name <name>` | No | Project name (derived from folder if omitted) |
@@ -188,6 +189,15 @@ swarm-maker --input ./notes --model claude --critique codex --output-swarm codex
 # All platforms from one run
 swarm-maker --input ./notes --model claude --output-swarm all -o ./SKILL
 
+# Local LLM via Ollama (offline, free)
+swarm-maker --input ./notes --model ollama --output-swarm claude -o ./SKILL
+
+# Regenerate a single skill without re-running the full pipeline (~18 min saved)
+swarm-maker regen --skill hunt-hashes --input ./notes --model codex -o ./SKILL
+
+# Custom output platform via YAML spec
+swarm-maker --input ./notes --model claude --output-swarm claude,custom:my-platform.yaml -o ./SKILL
+
 # Custom prompt pack
 swarm-maker prompt-pack export -o ./pack.json   # export, edit, then:
 swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./pack.json -o ./SKILL
@@ -198,6 +208,7 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
 | Command | Description |
 |---------|-------------|
 | `swarm-maker discover` | Discover available LLM CLI tools on your system |
+| `swarm-maker regen --skill <slug> --input <dir> --model <provider>` | Regenerate a single skill without re-running the full pipeline |
 | `swarm-maker validate --bundle <dir> --target <provider>` | Validate an installed skill bundle against a target LLM CLI (smoke-test discoverability and triggerability) |
 | `swarm-maker prompt-pack export -o <file>` | Export the default prompt pack for customization |
 | `swarm-maker version` | Print swarm-maker version |
@@ -222,6 +233,7 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
     skills/
       <skill-slug>/
         SKILL.md                   # Frontmatter + body (platform-agnostic)
+        mcp_tool.json              # MCP-compatible tool definition
   .codex/                          # Stage 2: platform-specific tree
     AGENTS.md                      # Agent router with OODA roles
     README.md                      # Skill bundle readme
@@ -234,7 +246,7 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
   .gitignore                       # Excludes debug artifacts from git
 ```
 
-`.agents/skills/` is the cross-platform standard path. Every skill is emitted here in addition to the platform-specific tree, using YAML frontmatter (`name`, `description`) for discovery by skill loaders.
+`.agents/skills/` is the cross-platform standard path. Every skill is emitted here in addition to the platform-specific tree, using YAML frontmatter (`name`, `description`) for discovery by skill loaders. Each skill also gets an `mcp_tool.json` file containing an [MCP](https://modelcontextprotocol.io/)-compatible tool definition with input schema extracted from the skill's "Inputs Required" section.
 
 ## Validation Pipeline
 
@@ -283,6 +295,32 @@ Source code lives in `src/swarmmaker/`. The root Makefile delegates all Go comma
 ### Release
 
 [GoReleaser](https://goreleaser.com/) builds for linux/darwin/windows on amd64/arm64. Version injected via `-X main.version={{.Version}}`.
+
+## Per-Skill Regeneration
+
+The `regen` subcommand re-generates a single skill by slug without re-running the full pipeline. It reads the existing `.tasks/` ledger, compiles a focused prompt for the target skill (injecting sibling skill slugs as context), runs one LLM call, validates the output, and atomically replaces only `.agents/skills/<slug>/SKILL.md`. This saves ~18 minutes per iteration compared to a full pipeline run.
+
+```bash
+swarm-maker regen --skill hunt-hashes --input ./notes --model codex -o ./SKILL
+```
+
+## OpenAPI Spec Ingestion
+
+During ingestion, SwarmMaker detects OpenAPI and Swagger specs (`.yaml`, `.yml`, `.json` files containing `openapi:` or `swagger:` keys) and parses them into structured endpoint summaries instead of treating them as raw text. Extracted endpoints, methods, parameters, and schemas are formatted as structured content that the LLM can decompose into concrete skills with accurate API parameters.
+
+## Custom Platform Renderers
+
+In addition to the built-in Claude, Codex, and Gemini output trees, custom output platforms can be defined via YAML config files:
+
+```yaml
+platform: my-agent-framework
+skill_path: "plugins/{slug}/prompt.md"
+frontmatter: true
+frontmatter_fields: [name, description, version]
+sections: [summary, process, constraints]
+```
+
+Use with `--output-swarm claude,custom:my-platform.yaml`. Custom output is supplemental — at least one standard format is still required.
 
 ## Input Requirements
 

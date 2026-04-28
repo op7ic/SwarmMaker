@@ -45,6 +45,7 @@ const (
 	ProviderClaude ProviderName = "claude"
 	ProviderCodex  ProviderName = "codex"
 	ProviderGemini ProviderName = "gemini"
+	ProviderOllama ProviderName = "ollama"
 )
 
 type ExecutionRole string

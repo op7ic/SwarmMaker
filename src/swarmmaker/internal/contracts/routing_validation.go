@@ -404,6 +404,7 @@ func knownProviderNames() map[string]struct{} {
 		string(ProviderClaude): {},
 		string(ProviderCodex):  {},
 		string(ProviderGemini): {},
+		string(ProviderOllama): {},
 	}
 }
 

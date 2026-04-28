@@ -37,6 +37,7 @@ import (
 	"github.com/op7ic/swarmmaker/internal/git"
 	"github.com/op7ic/swarmmaker/internal/ingestion"
 	artifactir "github.com/op7ic/swarmmaker/internal/ir"
+	"github.com/op7ic/swarmmaker/internal/output"
 	"github.com/op7ic/swarmmaker/internal/swarm"
 	"github.com/op7ic/swarmmaker/internal/textutil"
 	"github.com/op7ic/swarmmaker/prompts"
@@ -59,6 +60,7 @@ var (
 	modelCritic          string
 	promptPackPath       string
 	promptPackExportPath string
+	regenSkillSlug       string
 )
 
 // minReadableFiles is the basic sanity threshold: at least 1 readable text
@@ -100,6 +102,19 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+var regenCmd = &cobra.Command{
+	Use:   "regen",
+	Short: "Regenerate a single skill without re-running the full pipeline",
+	Long: strings.TrimSpace(`
+regen reads an existing .tasks/ ledger and regenerates a single skill by slug.
+This saves ~18 minutes per iteration compared to a full pipeline run.
+
+Usage:
+  swarm-maker regen --skill <slug> --input ./input --model codex -o ./SKILL
+`),
+	RunE: runRegen,
+}
+
 func init() {
 	rootCmd.Flags().StringVar(&inputPath, "input", "", "Path to folder containing loose documentation (required)")
 	rootCmd.Flags().StringVarP(&outputDir, "output-folder", "o", ".", "Output folder for the generated swarm")
@@ -121,6 +136,16 @@ func init() {
 	promptPackExportCmd.Flags().StringVarP(&promptPackExportPath, "output", "o", "", "Path to write the default prompt pack JSON")
 	rootCmd.AddCommand(promptPackCmd)
 	rootCmd.AddCommand(versionCmd)
+	regenCmd.Flags().StringVar(&regenSkillSlug, "skill", "", "Slug of the skill to regenerate (required)")
+	regenCmd.Flags().StringVar(&inputPath, "input", "", "Path to original input folder (required)")
+	regenCmd.Flags().StringVarP(&outputDir, "output-folder", "o", ".", "Output folder containing existing bundle")
+	regenCmd.Flags().StringVar(&primaryLLM, "model", "", "LLM CLI for generation (required)")
+	regenCmd.Flags().StringVar(&outputSwarm, "output-swarm", "claude", "Target swarm format")
+	regenCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
+	_ = regenCmd.MarkFlagRequired("skill")
+	_ = regenCmd.MarkFlagRequired("input")
+	_ = regenCmd.MarkFlagRequired("model")
+	rootCmd.AddCommand(regenCmd)
 }
 
 var promptPackCmd = &cobra.Command{
@@ -183,6 +208,147 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runRegen(cmd *cobra.Command, args []string) error {
+	bold := color.New(color.Bold)
+	green := color.New(color.FgGreen)
+	red := color.New(color.FgRed)
+
+	bold.Printf("swarm-maker %s -- Skill Regeneration\n", Version)
+	fmt.Println()
+
+	slug := textutil.Slugify(regenSkillSlug)
+	if slug == "" {
+		return fmt.Errorf("--skill flag must be a valid slug")
+	}
+
+	// Read existing ledger
+	absOutput, err := filepath.Abs(outputDir)
+	if err != nil {
+		return fmt.Errorf("resolve output dir: %w", err)
+	}
+	tasksDir := filepath.Join(absOutput, ".tasks")
+	skillsPath := filepath.Join(tasksDir, "skills.md")
+	skillsContent, err := os.ReadFile(skillsPath)
+	if err != nil {
+		return fmt.Errorf("read existing skills ledger: %w", err)
+	}
+
+	// Parse existing skills to get sibling slugs
+	existingSkills, err := parseSkillsDocument(".tasks/skills.md", string(skillsContent))
+	if err != nil {
+		return fmt.Errorf("parse existing skills: %w", err)
+	}
+	var siblingsSlugs []string
+	found := false
+	for _, sk := range existingSkills {
+		siblingsSlugs = append(siblingsSlugs, sk.Slug)
+		if textutil.Slugify(sk.Slug) == slug {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("skill slug %q not found in existing ledger; available: %s", slug, strings.Join(siblingsSlugs, ", "))
+	}
+
+	// Read source material for IR
+	ictx, err := ingestion.ReadFolder(inputPath)
+	if err != nil {
+		return fmt.Errorf("read input folder: %w", err)
+	}
+
+	// Discover LLM
+	tools := discovery.FindAllLLMs()
+	var primary discovery.LLMTool
+	for _, t := range tools {
+		if t.Name == primaryLLM && t.Available {
+			primary = t
+			break
+		}
+	}
+	if !primary.Available {
+		return fmt.Errorf("provider %q not available", primaryLLM)
+	}
+
+	// Build PromptIR (minimal, from existing context)
+	outputFormats, err := parseOutputFormats(outputSwarm)
+	if err != nil {
+		return fmt.Errorf("invalid --output-swarm: %w", err)
+	}
+	formatNames := make([]string, len(outputFormats))
+	for i, f := range outputFormats {
+		formatNames[i] = string(f)
+	}
+	if projectName == "" {
+		projectName = filepath.Base(absOutput)
+	}
+
+	ir := prompts.PromptIR{
+		ProjectName:          projectName,
+		SourceMaterial:       ictx.Summary,
+		InputRoot:            ictx.RootPath,
+		TargetFormats:        formatNames,
+		GeneratorProvider:    primary.Name,
+		CriticProvider:       primary.Name,
+		OutputRenderers:      formatNames,
+		EvidenceManifestPath: filepath.Join(tasksDir, "evidence.json"),
+		IRManifestPath:       filepath.Join(tasksDir, "manifest.json"),
+		PromptPackName:       "embedded",
+		PromptPackSource:     "SwarmMaker",
+		PromptPackDigest:     "regen",
+		InputFileCount:       ictx.FileCount,
+		BinaryFileCount:      len(ictx.BinaryFiles),
+		EvidenceEventCount:   len(ictx.Evidence),
+	}
+
+	// Compile single-skill prompt
+	prompt, err := prompts.CompileSingleSkillPrompt(slug, ir, siblingsSlugs)
+	if err != nil {
+		return fmt.Errorf("compile regen prompt: %w", err)
+	}
+
+	bold.Printf("Regenerating skill: %s\n", slug)
+
+	// Execute LLM
+	exec := executor.New(primary, primary, verbose)
+	if err := exec.SetStagingDir(absOutput); err != nil {
+		return fmt.Errorf("set staging dir: %w", err)
+	}
+	defer exec.Cleanup()
+
+	outputFile := filepath.Join(tasksDir, fmt.Sprintf("regen-%s.md", slug))
+	resp, err := exec.RunPrimaryToFile(prompt, outputFile)
+	if err != nil {
+		red.Printf("Regeneration failed: %v\n", err)
+		return err
+	}
+
+	// Parse the regenerated skill
+	regenSkills, err := parseSkillsDocument("regen", resp.Output)
+	if err != nil {
+		red.Printf("Failed to parse regenerated skill output: %v\n", err)
+		return fmt.Errorf("parse regenerated skill: %w", err)
+	}
+	if len(regenSkills) == 0 {
+		return fmt.Errorf("regeneration produced no skills")
+	}
+
+	// Use the first skill (we asked for exactly one)
+	regenSkill := regenSkills[0]
+	split := output.BuildSkillSplit(regenSkill)
+
+	// Replace the skill in the bundle
+	if err := ReplaceSkill(absOutput, slug, split.Main); err != nil {
+		return fmt.Errorf("replace skill: %w", err)
+	}
+
+	// Clean up temp file
+	os.Remove(outputFile)
+
+	green.Printf("Successfully regenerated skill: %s\n", slug)
+	fmt.Printf("Updated: %s\n", filepath.Join(absOutput, ".agents", "skills", slug, "SKILL.md"))
+	return nil
+}
+
 // validationReport accumulates validation findings for the structured output file.
 type validationReport struct {
 	complexity       *ingestion.SourceComplexity
@@ -206,8 +372,32 @@ type validationReport struct {
 	llmCalls     int
 	inputTokens  int
 	outputTokens int
+	perTaskCosts []taskCost
 	// Prompt injection warnings from ingestion
 	injectionWarnings []string
+}
+
+// taskCost records token usage for a single LLM invocation.
+type taskCost struct {
+	TaskName     string
+	InputTokens  int
+	OutputTokens int
+	Duration     time.Duration
+}
+
+func (r *validationReport) recordLLMCall(taskName string, resp *executor.Response) {
+	if resp == nil {
+		return
+	}
+	r.llmCalls++
+	r.inputTokens += resp.InputTokens
+	r.outputTokens += resp.OutputTokens
+	r.perTaskCosts = append(r.perTaskCosts, taskCost{
+		TaskName:     taskName,
+		InputTokens:  resp.InputTokens,
+		OutputTokens: resp.OutputTokens,
+		Duration:     resp.Duration,
+	})
 }
 
 type revisionResult struct {
@@ -688,11 +878,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 			return failValidation(fmt.Errorf("building adversarial review prompt: %w", err))
 		}
 		reviewResp, err := exec.RunCritic(reviewPrompt)
-		report.llmCalls++
-		if reviewResp != nil {
-			report.inputTokens += reviewResp.InputTokens
-			report.outputTokens += reviewResp.OutputTokens
-		}
+		report.recordLLMCall("adversarial-review", reviewResp)
 		if err != nil {
 			yellow.Printf("  Adversarial review failed: %v\n", err)
 			report.reviewVerdict = "error"
@@ -917,11 +1103,7 @@ func reviseFromReview(
 
 		revPrompt := sourceHints + crossFileCtx + revisionPrompt
 		revResp, err := exec.RunPrimaryToFile(revPrompt, snapshot.AbsPath)
-		report.llmCalls++
-		if revResp != nil {
-			report.inputTokens += revResp.InputTokens
-			report.outputTokens += revResp.OutputTokens
-		}
+		report.recordLLMCall("revision:"+f, revResp)
 		if err != nil {
 			yellow.Printf("    ? %s: revision failed: %v\n", f, err)
 			results = append(results, revisionResult{File: f, Success: false})
@@ -1514,14 +1696,28 @@ func writeValidationReport(outputDir string, r *validationReport) error {
 		b.WriteString("\n")
 	}
 
-	// Cost estimate
-	b.WriteString("## Cost Estimate\n\n")
-	b.WriteString(fmt.Sprintf("- **Total LLM calls**: %d\n", r.llmCalls))
-	b.WriteString(fmt.Sprintf("- **Estimated input tokens**: %d\n", r.inputTokens))
-	b.WriteString(fmt.Sprintf("- **Estimated output tokens**: %d\n", r.outputTokens))
+	// Cost breakdown
+	b.WriteString("## Cost Breakdown\n\n")
 	inputCost := float64(r.inputTokens) * 3.0 / 1_000_000
 	outputCost := float64(r.outputTokens) * 15.0 / 1_000_000
-	b.WriteString(fmt.Sprintf("- **Estimated cost at $3/$15 per MTok (Sonnet)**: $%.4f\n\n", inputCost+outputCost))
+	if len(r.perTaskCosts) > 0 {
+		b.WriteString("| Task | Input Tokens | Output Tokens | Est. Cost |\n")
+		b.WriteString("|------|-------------|---------------|----------|\n")
+		for _, tc := range r.perTaskCosts {
+			taskInputCost := float64(tc.InputTokens) * 3.0 / 1_000_000
+			taskOutputCost := float64(tc.OutputTokens) * 15.0 / 1_000_000
+			b.WriteString(fmt.Sprintf("| %s | %d | %d | $%.4f |\n",
+				tc.TaskName, tc.InputTokens, tc.OutputTokens, taskInputCost+taskOutputCost))
+		}
+		b.WriteString(fmt.Sprintf("| **Total** | **%d** | **%d** | **$%.4f** |\n",
+			r.inputTokens, r.outputTokens, inputCost+outputCost))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(fmt.Sprintf("- **Total LLM calls**: %d\n", r.llmCalls))
+		b.WriteString(fmt.Sprintf("- **Estimated input tokens**: %d\n", r.inputTokens))
+		b.WriteString(fmt.Sprintf("- **Estimated output tokens**: %d\n", r.outputTokens))
+		b.WriteString(fmt.Sprintf("- **Estimated cost at $3/$15 per MTok (Sonnet)**: $%.4f\n\n", inputCost+outputCost))
+	}
 
 	// Summary
 	b.WriteString("## Summary\n\n")

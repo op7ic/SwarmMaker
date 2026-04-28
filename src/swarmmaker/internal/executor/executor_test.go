@@ -862,6 +862,32 @@ func TestSandboxFallbackDetection(t *testing.T) {
 	})
 }
 
+func TestBuildArgsOllama(t *testing.T) {
+	args, err := buildArgs("ollama", "test prompt", "/tmp/work", "llama3.1", "", false, false)
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if args[0] != "run" {
+		t.Errorf("expected 'run', got %q", args[0])
+	}
+	if args[1] != "llama3.1" {
+		t.Errorf("expected model 'llama3.1', got %q", args[1])
+	}
+	if args[2] != "--nowordwrap" {
+		t.Errorf("expected '--nowordwrap', got %q", args[2])
+	}
+}
+
+func TestBuildArgsOllamaDefaultModel(t *testing.T) {
+	args, err := buildArgs("ollama", "test prompt", "/tmp/work", "", "", false, false)
+	if err != nil {
+		t.Fatalf("buildArgs failed: %v", err)
+	}
+	if args[1] != "llama3.1" {
+		t.Errorf("expected default model 'llama3.1', got %q", args[1])
+	}
+}
+
 func TestBuildArgsReturnsErrorForUnknownProvider(t *testing.T) {
 	_, err := buildArgs("unknown-provider", "prompt", "", "", "", false, false)
 	if err == nil {

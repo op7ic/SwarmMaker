@@ -1128,3 +1128,60 @@ func TestNonSkillPromptsLackExecutableRules(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileSingleSkillPromptContainsTargetAndSiblings(t *testing.T) {
+	ir := validIR()
+	siblings := []string{"ingest-data", "classify-alert", "report-output"}
+	prompt, err := CompileSingleSkillPrompt("classify-alert", ir, siblings)
+	if err != nil {
+		t.Fatalf("CompileSingleSkillPrompt failed: %v", err)
+	}
+	for _, want := range []string{
+		"single skill regeneration for slug 'classify-alert'",
+		"TARGET: Regenerate ONLY the skill with slug 'classify-alert'",
+		"SIBLING SKILLS",
+		"- ingest-data",
+		"- report-output",
+		"SKILL COMPILER CONTRACT",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q", want)
+		}
+	}
+	// The target slug should NOT appear in the sibling list
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.TrimSpace(line) == "- classify-alert" {
+			t.Fatal("target slug should not appear in sibling list")
+		}
+	}
+}
+
+func TestCompileSingleSkillPromptRejectsEmptySlug(t *testing.T) {
+	_, err := CompileSingleSkillPrompt("", validIR(), nil)
+	if err == nil || !strings.Contains(err.Error(), "skill slug is required") {
+		t.Fatalf("expected slug required error, got %v", err)
+	}
+}
+
+func TestCompileSingleSkillPromptRejectsInvalidIR(t *testing.T) {
+	ir := validIR()
+	ir.TargetFormats = nil
+	_, err := CompileSingleSkillPrompt("test-slug", ir, nil)
+	if err == nil {
+		t.Fatal("expected validation error for invalid IR")
+	}
+}
+
+func TestCompileSingleSkillPromptNoSiblings(t *testing.T) {
+	ir := validIR()
+	prompt, err := CompileSingleSkillPrompt("solo-skill", ir, nil)
+	if err != nil {
+		t.Fatalf("CompileSingleSkillPrompt failed: %v", err)
+	}
+	if strings.Contains(prompt, "SIBLING SKILLS") {
+		t.Fatal("prompt should not contain SIBLING SKILLS when none provided")
+	}
+	if !strings.Contains(prompt, "TARGET: Regenerate ONLY the skill with slug 'solo-skill'") {
+		t.Fatal("prompt missing target directive")
+	}
+}

@@ -93,6 +93,15 @@ var knownTools = []struct {
 			CapabilityRenderOutput,
 		},
 	},
+	{
+		Name:       "ollama",
+		Binaries:   []string{"ollama"},
+		VersionCmd: []string{"ollama", "--version"},
+		Capabilities: []Capability{
+			CapabilityGenerate,
+			CapabilityCritique,
+		},
+	},
 }
 
 var (

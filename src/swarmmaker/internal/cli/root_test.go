@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/op7ic/swarmmaker/internal/executor"
 	"github.com/op7ic/swarmmaker/internal/ingestion"
 	"github.com/op7ic/swarmmaker/internal/output"
 	"github.com/op7ic/swarmmaker/internal/swarm"
@@ -1725,7 +1726,7 @@ func TestCostEstimateInReport(t *testing.T) {
 	text := string(content)
 
 	for _, want := range []string{
-		"## Cost Estimate",
+		"## Cost Breakdown",
 		"Total LLM calls**: 12",
 		"Estimated input tokens**: 50000",
 		"Estimated output tokens**: 20000",
@@ -1957,5 +1958,158 @@ func TestIncrementalRegeneratesOnEmptyLedgerFile(t *testing.T) {
 
 	if checkIncrementalSkip(tasksDir, dir, hash, false) {
 		t.Fatal("expected no skip when a ledger file is empty")
+	}
+}
+
+func TestReplaceSkillUpdatesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, ".agents", "skills", "test-slug")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalContent := "# Original Skill\n\nOriginal body.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(originalContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newContent := "# Updated Skill\n\nNew body with improvements.\n"
+	if err := ReplaceSkill(dir, "test-slug", newContent); err != nil {
+		t.Fatalf("ReplaceSkill failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != newContent {
+		t.Fatalf("got %q, want %q", string(got), newContent)
+	}
+}
+
+func TestReplaceSkillRejectsEmptySlug(t *testing.T) {
+	err := ReplaceSkill(t.TempDir(), "", "content")
+	if err == nil || !strings.Contains(err.Error(), "skill slug is required") {
+		t.Fatalf("expected slug required error, got %v", err)
+	}
+}
+
+func TestReplaceSkillRejectsMissingDir(t *testing.T) {
+	dir := t.TempDir()
+	err := ReplaceSkill(dir, "nonexistent-slug", "content")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("expected does not exist error, got %v", err)
+	}
+}
+
+func TestCostBreakdownTableInReport(t *testing.T) {
+	tasksDir := filepath.Join(t.TempDir(), ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	report := &validationReport{
+		promptPackName:   "swarmmaker-default",
+		promptPackSource: "embedded:prompts/default_pack.json",
+		promptPackDigest: "sha256:test",
+		promptPackReview: prompts.PackReview{Approved: true},
+		evidencePath:     filepath.Join(tasksDir, "evidence.json"),
+		irManifestPath:   filepath.Join(tasksDir, "manifest.json"),
+		reviewVerdict:    "approve",
+		llmCalls:         3,
+		inputTokens:      5000,
+		outputTokens:     2000,
+		perTaskCosts: []taskCost{
+			{TaskName: "draft-skills", InputTokens: 3000, OutputTokens: 1000},
+			{TaskName: "adversarial-review", InputTokens: 1500, OutputTokens: 800},
+			{TaskName: "revision:skills.md", InputTokens: 500, OutputTokens: 200},
+		},
+	}
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	for _, want := range []string{
+		"## Cost Breakdown",
+		"| Task | Input Tokens | Output Tokens | Est. Cost |",
+		"| draft-skills |",
+		"| adversarial-review |",
+		"| revision:skills.md |",
+		"| **Total** |",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("report missing %q", want)
+		}
+	}
+	// Should NOT contain the old flat format
+	if strings.Contains(s, "Total LLM calls") {
+		t.Error("report should use table format when perTaskCosts are present")
+	}
+}
+
+func TestCostBreakdownFallsBackWhenNoPerTaskCosts(t *testing.T) {
+	tasksDir := filepath.Join(t.TempDir(), ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	report := &validationReport{
+		promptPackName:   "swarmmaker-default",
+		promptPackSource: "embedded:prompts/default_pack.json",
+		promptPackDigest: "sha256:test",
+		promptPackReview: prompts.PackReview{Approved: true},
+		evidencePath:     filepath.Join(tasksDir, "evidence.json"),
+		irManifestPath:   filepath.Join(tasksDir, "manifest.json"),
+		reviewVerdict:    "approve",
+		llmCalls:         2,
+		inputTokens:      1000,
+		outputTokens:     500,
+	}
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	if !strings.Contains(s, "Total LLM calls") {
+		t.Error("report should use flat format when no perTaskCosts")
+	}
+	if strings.Contains(s, "| Task |") {
+		t.Error("report should not use table format when no perTaskCosts")
+	}
+}
+
+func TestRecordLLMCallAccumulatesCorrectly(t *testing.T) {
+	r := &validationReport{}
+	r.recordLLMCall("task-a", &executor.Response{
+		InputTokens:  100,
+		OutputTokens: 50,
+		Duration:     2 * time.Second,
+	})
+	r.recordLLMCall("task-b", &executor.Response{
+		InputTokens:  200,
+		OutputTokens: 100,
+		Duration:     3 * time.Second,
+	})
+	// nil response should be a no-op
+	r.recordLLMCall("task-nil", nil)
+
+	if r.llmCalls != 2 {
+		t.Fatalf("llmCalls = %d, want 2", r.llmCalls)
+	}
+	if r.inputTokens != 300 {
+		t.Fatalf("inputTokens = %d, want 300", r.inputTokens)
+	}
+	if r.outputTokens != 150 {
+		t.Fatalf("outputTokens = %d, want 150", r.outputTokens)
+	}
+	if len(r.perTaskCosts) != 2 {
+		t.Fatalf("perTaskCosts len = %d, want 2", len(r.perTaskCosts))
+	}
+	if r.perTaskCosts[0].TaskName != "task-a" {
+		t.Fatalf("first task = %q, want task-a", r.perTaskCosts[0].TaskName)
 	}
 }

@@ -174,6 +174,46 @@ func artifactOutputContract(kind DraftKind) string {
 	return strings.Join(lines, "\n")
 }
 
+// CompileSingleSkillPrompt builds a focused prompt for regenerating a single skill.
+// existingSkillSlugs provides sibling context so the LLM knows what other skills exist.
+func CompileSingleSkillPrompt(slug string, ir PromptIR, existingSkillSlugs []string) (string, error) {
+	if strings.TrimSpace(slug) == "" {
+		return "", fmt.Errorf("skill slug is required")
+	}
+	pack, err := DefaultPack()
+	if err != nil {
+		return "", err
+	}
+	if err := ir.Validate(); err != nil {
+		return "", err
+	}
+	body, ok := pack.Drafts[DraftSkills]
+	if !ok {
+		return "", fmt.Errorf("skills draft template not found in prompt pack")
+	}
+	rendered, err := body.render(newPromptTemplateData(ir))
+	if err != nil {
+		return "", fmt.Errorf("render single skill prompt: %w", err)
+	}
+	var sibling strings.Builder
+	if len(existingSkillSlugs) > 0 {
+		sibling.WriteString("\nSIBLING SKILLS (already generated, do NOT regenerate these):\n")
+		for _, s := range existingSkillSlugs {
+			if s != slug {
+				sibling.WriteString("- ")
+				sibling.WriteString(s)
+				sibling.WriteString("\n")
+			}
+		}
+		sibling.WriteString("\n")
+	}
+	return promptHeader(ir, "single skill regeneration for slug '"+slug+"'", false) +
+		artifactOutputContract(DraftSkills) +
+		sibling.String() +
+		"TARGET: Regenerate ONLY the skill with slug '" + slug + "'. Return exactly one ## Skill: block.\n\n" +
+		rendered, nil
+}
+
 func requiredDraftKinds() []DraftKind {
 	return []DraftKind{
 		DraftContext,

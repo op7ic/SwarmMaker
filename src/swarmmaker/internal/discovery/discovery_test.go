@@ -47,7 +47,7 @@ func TestFindAllLLMsAnnotatesCapabilitiesAndVersionMetadata(t *testing.T) {
 	}
 
 	tools := FindAllLLMs()
-	if got, want := len(tools), 3; got != want {
+	if got, want := len(tools), 4; got != want {
 		t.Fatalf("tool count = %d, want %d", got, want)
 	}
 
@@ -108,5 +108,28 @@ func TestValidateKnownMetadataRejectsUnknownProvider(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not a known CLI tool") {
 		t.Fatalf("error = %v, want unknown provider failure", err)
+	}
+}
+
+func TestOllamaDiscovery(t *testing.T) {
+	// Verify ollama is in knownTools
+	found := false
+	for _, tool := range knownTools {
+		if tool.Name == "ollama" {
+			found = true
+			if len(tool.Capabilities) != 2 {
+				t.Errorf("ollama should have 2 capabilities, got %d", len(tool.Capabilities))
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("ollama not found in knownTools")
+	}
+}
+
+func TestOllamaIsKnownToolName(t *testing.T) {
+	if !IsKnownToolName("ollama") {
+		t.Error("ollama should be a known tool name")
 	}
 }

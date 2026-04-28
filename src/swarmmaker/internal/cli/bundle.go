@@ -25,6 +25,8 @@ import (
 	"github.com/op7ic/swarmmaker/internal/textutil"
 )
 
+var customSpecPaths []string
+
 var ledgerFiles = []string{
 	".tasks/context.md",
 	".tasks/tasks.md",
@@ -148,6 +150,31 @@ func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projec
 			}
 		}
 	}
+	// Render custom platform outputs.
+	for _, specPath := range customSpecPaths {
+		spec, loadErr := output.LoadCustomSpec(specPath)
+		if loadErr != nil {
+			return fmt.Errorf("load custom spec: %w", loadErr)
+		}
+		customFiles, renderErr := output.RenderCustom(spec, bundle.Blueprint.Skills)
+		if renderErr != nil {
+			return fmt.Errorf("render custom platform %q: %w", spec.Platform, renderErr)
+		}
+		for _, artifact := range customFiles {
+			path := filepath.Join(stagingDir, filepath.FromSlash(artifact.Path))
+			cleanPath := filepath.Clean(path)
+			if !strings.HasPrefix(cleanPath, cleanStaging+string(filepath.Separator)) && cleanPath != cleanStaging {
+				return fmt.Errorf("custom artifact path %q escapes staging directory", artifact.Path)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				return fmt.Errorf("create custom output dir: %w", err)
+			}
+			if err := os.WriteFile(path, []byte(artifact.Content), 0644); err != nil {
+				return fmt.Errorf("write custom output file %s: %w", path, err)
+			}
+		}
+	}
+
 	// Emit cross-platform .agents/skills/<slug>/SKILL.md for each skill,
 	// with progressive disclosure: large skills get a references/ subdirectory.
 	for _, skill := range bundle.Blueprint.Skills {
@@ -163,6 +190,15 @@ func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projec
 		split := output.BuildSkillSplit(skill)
 		if err := os.WriteFile(agentsSkillPath, []byte(split.Main), 0644); err != nil {
 			return fmt.Errorf("write .agents/skills/%s/SKILL.md: %w", skill.Slug, err)
+		}
+		// Emit MCP tool definition alongside SKILL.md
+		mcpJSON, mcpErr := output.BuildMCPToolJSON(skill)
+		if mcpErr != nil {
+			return fmt.Errorf("build MCP tool for %s: %w", skill.Slug, mcpErr)
+		}
+		mcpPath := filepath.Join(stagingDir, ".agents", "skills", slug, "mcp_tool.json")
+		if err := os.WriteFile(mcpPath, mcpJSON, 0644); err != nil {
+			return fmt.Errorf("write mcp_tool.json for %s: %w", skill.Slug, err)
 		}
 		if split.References != "" {
 			refPath := filepath.Join(stagingDir, ".agents", "skills", slug, split.RefPath)
@@ -620,23 +656,31 @@ func parseOutputFormats(formatName string) ([]output.Format, error) {
 	}
 	seen := make(map[output.Format]struct{}, len(names))
 	formats := make([]output.Format, 0, len(names))
+	customSpecPaths = nil
 	for _, name := range names {
-		switch strings.TrimSpace(name) {
-		case string(output.FormatClaude):
+		trimmed := strings.TrimSpace(name)
+		switch {
+		case trimmed == string(output.FormatClaude):
 			if _, ok := seen[output.FormatClaude]; !ok {
 				formats = append(formats, output.FormatClaude)
 				seen[output.FormatClaude] = struct{}{}
 			}
-		case string(output.FormatCodex):
+		case trimmed == string(output.FormatCodex):
 			if _, ok := seen[output.FormatCodex]; !ok {
 				formats = append(formats, output.FormatCodex)
 				seen[output.FormatCodex] = struct{}{}
 			}
-		case string(output.FormatGemini):
+		case trimmed == string(output.FormatGemini):
 			if _, ok := seen[output.FormatGemini]; !ok {
 				formats = append(formats, output.FormatGemini)
 				seen[output.FormatGemini] = struct{}{}
 			}
+		case strings.HasPrefix(trimmed, "custom:"):
+			specPath := strings.TrimPrefix(trimmed, "custom:")
+			if strings.TrimSpace(specPath) == "" {
+				return nil, fmt.Errorf("custom format requires a spec path: custom:/path/to/spec.yaml")
+			}
+			customSpecPaths = append(customSpecPaths, specPath)
 		default:
 			return nil, fmt.Errorf("unsupported output swarm %q", formatName)
 		}
@@ -707,6 +751,27 @@ func prepareOutputTree(outputDir string, formats []output.Format, force bool) er
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("stat output artifact %q: %w", path, err)
 		}
+	}
+	return nil
+}
+
+// ReplaceSkill replaces a single skill file in an existing bundle directory.
+// It reads the existing skills, replaces the matching slug, and writes the updated SKILL.md.
+func ReplaceSkill(bundleDir, slug, newSkillContent string) error {
+	slug = textutil.Slugify(slug)
+	if slug == "" {
+		return fmt.Errorf("skill slug is required")
+	}
+	skillDir := filepath.Join(bundleDir, ".agents", "skills", slug)
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
+		return fmt.Errorf("skill directory %q does not exist; cannot replace a skill that was not previously generated", skillDir)
+	}
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		return fmt.Errorf("create skill directory: %w", err)
+	}
+	if err := os.WriteFile(skillPath, []byte(newSkillContent), 0644); err != nil {
+		return fmt.Errorf("write skill file: %w", err)
 	}
 	return nil
 }
