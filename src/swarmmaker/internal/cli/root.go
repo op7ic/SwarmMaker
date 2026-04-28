@@ -390,6 +390,11 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	// -------------------------------------------------------
 	exec := executor.New(primary, critic, verbose)
 	exec.Ctx = ctx
+	// Track spawned processes in a temp file outside the workspace so the
+	// workspace write validator doesn't flag it as an unexpected provider file.
+	trackerPath := filepath.Join(os.TempDir(), fmt.Sprintf("swarmmaker-processes-%d.json", os.Getpid()))
+	exec.Tracker = executor.NewProcessTracker(trackerPath)
+	defer exec.Tracker.Cleanup()
 
 	// Apply model overrides
 	if modelPrimary != "" || modelCritic != "" {

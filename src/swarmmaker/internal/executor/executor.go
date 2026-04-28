@@ -57,6 +57,7 @@ type Executor struct {
 	StagingDir       string          // directory where context files are written for LLM access
 	Models           ModelOverrides  // optional model overrides per tool (e.g. "claude" -> "haiku")
 	Ctx              context.Context // parent context for cancellation (signal handling)
+	Tracker          *ProcessTracker // tracks spawned child processes for lifecycle management
 	managedMu        sync.RWMutex
 	managedOut       map[string]struct{}
 
@@ -562,6 +563,15 @@ func (e *Executor) runWithModel(tool discovery.LLMTool, prompt, role, outputFile
 		return resp, resp.Error
 	}
 
+	// Track the spawned child process for lifecycle management.
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	if e.Tracker != nil && pid > 0 {
+		e.Tracker.Track(pid, tool.Name, role, role)
+	}
+
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- cmd.Wait()
@@ -596,6 +606,9 @@ func (e *Executor) runWithModel(tool discovery.LLMTool, prompt, role, outputFile
 				} else {
 					resp.Error = fmt.Errorf("%s cancelled: %w", tool.Name, ctxErr)
 				}
+				if e.Tracker != nil && pid > 0 {
+					e.Tracker.Complete(pid, -1, true)
+				}
 				return resp, resp.Error
 			}
 
@@ -606,12 +619,19 @@ func (e *Executor) runWithModel(tool discovery.LLMTool, prompt, role, outputFile
 				} else {
 					resp.Error = fmt.Errorf("%s failed: %w", tool.Name, err)
 				}
+				if e.Tracker != nil && pid > 0 {
+					e.Tracker.Complete(pid, 1, true)
+				}
 				return resp, resp.Error
 			}
 
 			resp.Output = strings.TrimSpace(stdout.String())
 			resp.InputTokens = len(prompt) / 4
 			resp.OutputTokens = len(resp.Output) / 4
+
+			if e.Tracker != nil && pid > 0 {
+				e.Tracker.Complete(pid, 0, false)
+			}
 
 			if e.Verbose {
 				fmt.Printf("  [%s] Response received (%d chars, %v)\n",
