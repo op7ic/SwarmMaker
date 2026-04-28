@@ -70,7 +70,10 @@ func buildMCPDescription(skill Skill) string {
 }
 
 // inputParamRe matches lines like "- field_name (type): description" or "- field_name: description"
-var inputParamRe = regexp.MustCompile(`(?m)^-\s+(\w[\w._-]*)\s*(?:\(([^)]+)\))?\s*(?::\s*(.+))?$`)
+var inputParamRe = regexp.MustCompile(`^-\s+` + "`?" + `(\w[\w._-]*)` + "`?" + `\s*(?:\(([^)]+)\))?\s*(?::\s*(.+))?$`)
+
+// inputParamBacktickRe matches "- `field_name: type`" patterns common in generated skills
+var inputParamBacktickRe = regexp.MustCompile("^-\\s+`(\\w[\\w._-]*)(?::\\s*(\\w+))?`\\s*(.*)")
 
 func buildMCPInputSchema(skill Skill) MCPInputSchema {
 	schema := MCPInputSchema{
@@ -78,23 +81,42 @@ func buildMCPInputSchema(skill Skill) MCPInputSchema {
 		Properties: make(map[string]MCPProperty),
 	}
 
-	// Extract parameters from "Inputs Required" section
+	// Extract parameters from "Inputs Required" section.
+	// Generated skills use ### (h3) under ## Instructions, so match both ## and ###.
 	lines := strings.Split(skill.Body, "\n")
 	inSection := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.EqualFold(trimmed, "## Inputs Required") {
+		lower := strings.ToLower(trimmed)
+		if lower == "## inputs required" || lower == "### inputs required" {
 			inSection = true
 			continue
 		}
-		if inSection && strings.HasPrefix(trimmed, "## ") {
+		if inSection && (strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ")) {
 			break
 		}
-		if !inSection {
+		if !inSection || !strings.HasPrefix(trimmed, "- ") {
 			continue
 		}
-		matches := inputParamRe.FindStringSubmatch(trimmed)
-		if len(matches) >= 2 {
+		// Try backtick format first: - `config_path: str` with description
+		if matches := inputParamBacktickRe.FindStringSubmatch(trimmed); len(matches) >= 2 {
+			name := matches[1]
+			propType := "string"
+			desc := ""
+			if len(matches) >= 3 && matches[2] != "" {
+				propType = normalizeMCPType(matches[2])
+			}
+			if len(matches) >= 4 {
+				desc = strings.TrimSpace(matches[3])
+			}
+			schema.Properties[name] = MCPProperty{
+				Type:        propType,
+				Description: desc,
+			}
+			continue
+		}
+		// Try plain format: - field_name (type): description
+		if matches := inputParamRe.FindStringSubmatch(trimmed); len(matches) >= 2 {
 			name := matches[1]
 			propType := "string"
 			desc := ""

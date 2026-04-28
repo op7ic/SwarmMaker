@@ -99,6 +99,37 @@ func TestBuildMCPToolNoInputs(t *testing.T) {
 	}
 }
 
+func TestBuildMCPToolH3Section(t *testing.T) {
+	// Real-world format: skills use ### (h3) under ## Instructions
+	skill := Skill{
+		Name:    "Hash Hunt",
+		Slug:    "hash-hunt",
+		Summary: "Hunts for hashes",
+		Body: `### When to Invoke
+- Hash list is provided
+
+### Inputs Required
+- ` + "`config_path: str`" + ` with required credentials
+- ` + "`hash_input_path: str`" + ` containing SHA256 values
+- ` + "`csv_output: str`" + `. Optional output path.
+
+### Process
+1. Validate hashes
+`,
+	}
+	def := BuildMCPTool(skill)
+	if len(def.InputSchema.Properties) != 3 {
+		t.Errorf("expected 3 properties from h3+backtick format, got %d: %+v",
+			len(def.InputSchema.Properties), def.InputSchema.Properties)
+	}
+	if p, ok := def.InputSchema.Properties["config_path"]; !ok || p.Type != "string" {
+		t.Errorf("expected config_path as string, got %+v", def.InputSchema.Properties["config_path"])
+	}
+	if p, ok := def.InputSchema.Properties["hash_input_path"]; !ok || p.Type != "string" {
+		t.Errorf("expected hash_input_path as string, got %+v", def.InputSchema.Properties["hash_input_path"])
+	}
+}
+
 func TestNormalizeMCPType(t *testing.T) {
 	tests := []struct {
 		input, want string
