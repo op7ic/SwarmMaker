@@ -36,11 +36,13 @@ type Task struct {
 
 // Result captures the outcome of one task.
 type Result struct {
-	Task     Task
-	Content  string
-	Duration time.Duration
-	Tool     string // which LLM tool was used
-	Error    error
+	Task         Task
+	Content      string
+	Duration     time.Duration
+	Tool         string // which LLM tool was used
+	Error        error
+	InputTokens  int
+	OutputTokens int
 }
 
 // Swarm runs LLM tasks in parallel with a concurrency limit.
@@ -128,7 +130,12 @@ func (s *Swarm) Run(tasks []Task) []Result {
 			duration := time.Since(start)
 
 			if err != nil {
-				results[idx] = Result{Task: t, Duration: duration, Error: err, Tool: tool.Name}
+				r := Result{Task: t, Duration: duration, Error: err, Tool: tool.Name}
+				if resp != nil {
+					r.InputTokens = resp.InputTokens
+					r.OutputTokens = resp.OutputTokens
+				}
+				results[idx] = r
 				mu.Lock()
 				red.Printf("    x %s failed (%s, %v)\n", t.OutputFile, tool.Name, duration.Round(time.Second))
 				mu.Unlock()
@@ -140,7 +147,9 @@ func (s *Swarm) Run(tasks []Task) []Result {
 			if len(strings.TrimSpace(content)) < t.MinLen {
 				results[idx] = Result{
 					Task: t, Content: content, Duration: duration, Tool: tool.Name,
-					Error: fmt.Errorf("%s output too short (%d chars, need %d)", t.Name, len(content), t.MinLen),
+					Error:        fmt.Errorf("%s output too short (%d chars, need %d)", t.Name, len(content), t.MinLen),
+					InputTokens:  resp.InputTokens,
+					OutputTokens: resp.OutputTokens,
 				}
 				mu.Lock()
 				red.Printf("    x %s too short (%d chars, %s, %v)\n", t.OutputFile, len(content), tool.Name, duration.Round(time.Second))
@@ -148,7 +157,7 @@ func (s *Swarm) Run(tasks []Task) []Result {
 				return
 			}
 
-			results[idx] = Result{Task: t, Content: content, Duration: duration, Tool: tool.Name}
+			results[idx] = Result{Task: t, Content: content, Duration: duration, Tool: tool.Name, InputTokens: resp.InputTokens, OutputTokens: resp.OutputTokens}
 
 			mu.Lock()
 			green.Printf("    + %s (%d chars, %s, %v)\n", t.OutputFile, len(content), tool.Name, duration.Round(time.Second))

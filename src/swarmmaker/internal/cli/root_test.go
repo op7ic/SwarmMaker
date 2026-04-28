@@ -15,9 +15,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -263,7 +265,7 @@ func TestEmitOutputSwarmWritesRequestedFormatTree(t *testing.T) {
 		}
 	}
 
-	err := emitOutputSwarms(dir, dir, []output.Format{output.FormatGemini}, "SwarmMaker", "codex", "codex", ledgerFiles)
+	err := emitOutputSwarms(dir, dir, []output.Format{output.FormatGemini}, "SwarmMaker", "codex", "codex", ledgerFiles, nil)
 	if err != nil {
 		t.Fatalf("emitOutputSwarms failed: %v", err)
 	}
@@ -305,7 +307,7 @@ func TestEmitOutputSwarmsWritesAllRequestedTrees(t *testing.T) {
 	}
 
 	formats := []output.Format{output.FormatClaude, output.FormatCodex, output.FormatGemini}
-	if err := emitOutputSwarms(dir, dir, formats, "SwarmMaker", "codex", "codex", ledgerFiles); err != nil {
+	if err := emitOutputSwarms(dir, dir, formats, "SwarmMaker", "codex", "codex", ledgerFiles, nil); err != nil {
 		t.Fatalf("emitOutputSwarms(all) failed: %v", err)
 	}
 
@@ -340,7 +342,7 @@ func TestParseOutputFormatsSupportsAllAndCommaLists(t *testing.T) {
 		{input: "all", want: []output.Format{output.FormatClaude, output.FormatCodex, output.FormatGemini}},
 		{input: "codex,claude,gemini", want: []output.Format{output.FormatClaude, output.FormatCodex, output.FormatGemini}},
 	} {
-		got, err := parseOutputFormats(tc.input)
+		got, _, err := parseOutputFormats(tc.input)
 		if err != nil {
 			t.Fatalf("parseOutputFormats(%q) failed: %v", tc.input, err)
 		}
@@ -352,6 +354,35 @@ func TestParseOutputFormatsSupportsAllAndCommaLists(t *testing.T) {
 				t.Fatalf("parseOutputFormats(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.want[i])
 			}
 		}
+	}
+}
+
+func TestParseOutputFormatsThreadSafe(t *testing.T) {
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	errs := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			formats, specs, err := parseOutputFormats("claude")
+			if err != nil {
+				errs <- fmt.Errorf("parseOutputFormats failed: %w", err)
+				return
+			}
+			if len(formats) != 1 || formats[0] != output.FormatClaude {
+				errs <- fmt.Errorf("unexpected formats: %v", formats)
+				return
+			}
+			if len(specs) != 0 {
+				errs <- fmt.Errorf("unexpected custom specs: %v", specs)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
 
@@ -1082,7 +1113,7 @@ func TestAtomicWriteSuccess(t *testing.T) {
 
 	bundle := testBundle()
 	formats := []output.Format{output.FormatClaude}
-	err := writeRenderedOutputSwarms(outputDir, formats, "TestProject", "claude", "claude", bundle)
+	err := writeRenderedOutputSwarms(outputDir, formats, "TestProject", "claude", "claude", bundle, nil)
 	if err != nil {
 		t.Fatalf("writeRenderedOutputSwarms failed: %v", err)
 	}
@@ -1131,7 +1162,7 @@ func TestAtomicWriteNoPartialOnFailure(t *testing.T) {
 
 	bundle := testBundle()
 	formats := []output.Format{output.FormatClaude}
-	err := writeRenderedOutputSwarms(outputDir, formats, "TestProject", "claude", "claude", bundle)
+	err := writeRenderedOutputSwarms(outputDir, formats, "TestProject", "claude", "claude", bundle, nil)
 	if err == nil {
 		t.Fatal("expected error when staging dir cannot be created")
 	}
@@ -1157,7 +1188,7 @@ func TestAtomicWritePreservesExistingFiles(t *testing.T) {
 
 	bundle := testBundle()
 	formats := []output.Format{output.FormatClaude}
-	err := writeRenderedOutputSwarms(outputDir, formats, "TestProject", "claude", "claude", bundle)
+	err := writeRenderedOutputSwarms(outputDir, formats, "TestProject", "claude", "claude", bundle, nil)
 	if err != nil {
 		t.Fatalf("writeRenderedOutputSwarms failed: %v", err)
 	}
@@ -1189,6 +1220,15 @@ func TestValidationPassedTruthTable(t *testing.T) {
 	concretePostScreen := &swarm.PreScreenResult{
 		NeedsLLMReview: false,
 		FileFlags:      map[string][]string{"file.md": {"still flagged"}},
+	}
+	advisoryOnlyPostScreen := &swarm.PreScreenResult{
+		NeedsLLMReview: true,
+		Reasons:        []string{"[advisory] skills.md: excessive ALL-CAPS"},
+	}
+	concreteAndDirtyPostScreen := &swarm.PreScreenResult{
+		NeedsLLMReview: true,
+		FileFlags:      map[string][]string{"file.md": {"concrete issue remains"}},
+		Reasons:        []string{"concrete issue remains"},
 	}
 
 	successRevision := []revisionResult{{File: "f.md", Success: true}}
@@ -1310,12 +1350,28 @@ func TestValidationPassedTruthTable(t *testing.T) {
 			revisions:     successRevision,
 			postScreen:    nil,
 		}, false},
-		{"revise + success + dirty postscreen = fail", &validationReport{
+		{"revise + success + advisory-only postscreen = pass", &validationReport{
 			reviewVerdict: "revise",
 			programmatic:  noErrors,
 			preScreen:     cleanPreScreen,
 			revisions:     successRevision,
 			postScreen:    dirtyPostScreen,
+		}, true},
+
+		// revise path: advisory vs concrete postscreen
+		{"revise + success + advisory-only postscreen (explicit) = pass", &validationReport{
+			reviewVerdict: "revise",
+			programmatic:  noErrors,
+			preScreen:     cleanPreScreen,
+			revisions:     successRevision,
+			postScreen:    advisoryOnlyPostScreen,
+		}, true},
+		{"revise + success + concrete postscreen = fail", &validationReport{
+			reviewVerdict: "revise",
+			programmatic:  noErrors,
+			preScreen:     cleanPreScreen,
+			revisions:     successRevision,
+			postScreen:    concreteAndDirtyPostScreen,
 		}, false},
 
 		// unknown/error verdicts
@@ -1501,7 +1557,7 @@ func TestWriteRenderedOutputSwarmsRejectsPathTraversal(t *testing.T) {
 		},
 	}
 	outputDir := t.TempDir()
-	err := writeRenderedOutputSwarms(outputDir, []output.Format{output.FormatClaude}, "test", "claude", "codex", bundle)
+	err := writeRenderedOutputSwarms(outputDir, []output.Format{output.FormatClaude}, "test", "claude", "codex", bundle, nil)
 	if err == nil {
 		t.Fatal("expected path traversal to be rejected, got nil error")
 	}
@@ -2111,5 +2167,380 @@ func TestRecordLLMCallAccumulatesCorrectly(t *testing.T) {
 	}
 	if r.perTaskCosts[0].TaskName != "task-a" {
 		t.Fatalf("first task = %q, want task-a", r.perTaskCosts[0].TaskName)
+	}
+}
+
+func TestRecordLLMCallFromResultAccumulatesCorrectly(t *testing.T) {
+	r := &validationReport{}
+	r.recordLLMCallFromResult(swarm.Result{
+		Task:         swarm.Task{Name: "context"},
+		InputTokens:  400,
+		OutputTokens: 200,
+		Duration:     5 * time.Second,
+	})
+	r.recordLLMCallFromResult(swarm.Result{
+		Task:         swarm.Task{Name: "tasks"},
+		InputTokens:  600,
+		OutputTokens: 300,
+		Duration:     7 * time.Second,
+	})
+
+	if r.llmCalls != 2 {
+		t.Fatalf("llmCalls = %d, want 2", r.llmCalls)
+	}
+	if r.inputTokens != 1000 {
+		t.Fatalf("inputTokens = %d, want 1000", r.inputTokens)
+	}
+	if r.outputTokens != 500 {
+		t.Fatalf("outputTokens = %d, want 500", r.outputTokens)
+	}
+	if len(r.perTaskCosts) != 2 {
+		t.Fatalf("perTaskCosts len = %d, want 2", len(r.perTaskCosts))
+	}
+	if r.perTaskCosts[0].TaskName != "context" {
+		t.Fatalf("first task = %q, want context", r.perTaskCosts[0].TaskName)
+	}
+	if r.perTaskCosts[1].TaskName != "tasks" {
+		t.Fatalf("second task = %q, want tasks", r.perTaskCosts[1].TaskName)
+	}
+}
+
+func TestCostBreakdownIncludesGenerationTasks(t *testing.T) {
+	tasksDir := filepath.Join(t.TempDir(), ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	report := &validationReport{
+		promptPackName:   "swarmmaker-default",
+		promptPackSource: "embedded:prompts/default_pack.json",
+		promptPackDigest: "sha256:test",
+		promptPackReview: prompts.PackReview{Approved: true},
+		evidencePath:     filepath.Join(tasksDir, "evidence.json"),
+		irManifestPath:   filepath.Join(tasksDir, "manifest.json"),
+		reviewVerdict:    "approve",
+	}
+	// Simulate preflight + generation + review calls
+	generationTasks := []string{"preflight", "context", "tasks", "product", "technical", "tools", "deployment", "todo", "skills", "agents", "adversarial-review"}
+	for i, name := range generationTasks {
+		report.recordLLMCallFromResult(swarm.Result{
+			Task:         swarm.Task{Name: name},
+			InputTokens:  1000 * (i + 1),
+			OutputTokens: 500 * (i + 1),
+			Duration:     time.Duration(i+1) * time.Second,
+		})
+	}
+
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	for _, name := range generationTasks {
+		if !strings.Contains(s, "| "+name+" |") {
+			t.Errorf("report missing generation task row for %q", name)
+		}
+	}
+}
+
+func TestCostBreakdownTotalsMatchSum(t *testing.T) {
+	tasksDir := filepath.Join(t.TempDir(), ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	report := &validationReport{
+		promptPackName:   "swarmmaker-default",
+		promptPackSource: "embedded:prompts/default_pack.json",
+		promptPackDigest: "sha256:test",
+		promptPackReview: prompts.PackReview{Approved: true},
+		evidencePath:     filepath.Join(tasksDir, "evidence.json"),
+		irManifestPath:   filepath.Join(tasksDir, "manifest.json"),
+		reviewVerdict:    "approve",
+	}
+	report.recordLLMCallFromResult(swarm.Result{
+		Task: swarm.Task{Name: "context"}, InputTokens: 1000, OutputTokens: 400,
+	})
+	report.recordLLMCallFromResult(swarm.Result{
+		Task: swarm.Task{Name: "tasks"}, InputTokens: 2000, OutputTokens: 600,
+	})
+	report.recordLLMCallFromResult(swarm.Result{
+		Task: swarm.Task{Name: "review"}, InputTokens: 500, OutputTokens: 200,
+	})
+
+	// Verify totals match sum of individual entries
+	wantInput := 1000 + 2000 + 500
+	wantOutput := 400 + 600 + 200
+	if report.inputTokens != wantInput {
+		t.Errorf("inputTokens = %d, want %d", report.inputTokens, wantInput)
+	}
+	if report.outputTokens != wantOutput {
+		t.Errorf("outputTokens = %d, want %d", report.outputTokens, wantOutput)
+	}
+
+	// Also verify the rendered report Total row contains the correct sums
+	if err := writeValidationReport(tasksDir, report); err != nil {
+		t.Fatalf("writeValidationReport failed: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(tasksDir, "validation-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(content)
+	wantTotalInput := fmt.Sprintf("**%d**", wantInput)
+	wantTotalOutput := fmt.Sprintf("**%d**", wantOutput)
+	if !strings.Contains(s, wantTotalInput) {
+		t.Errorf("report Total row missing input sum %s", wantTotalInput)
+	}
+	if !strings.Contains(s, wantTotalOutput) {
+		t.Errorf("report Total row missing output sum %s", wantTotalOutput)
+	}
+}
+
+func TestReplaceSkillBlock(t *testing.T) {
+	ledger := `# Skills
+
+## Skill: Alpha Skill
+- Slug: alpha-skill
+- Summary: Does alpha things
+
+### When to Invoke
+- When alpha is needed
+
+### Process
+1. Do alpha
+
+## Skill: Beta Skill
+- Slug: beta-skill
+- Summary: Does beta things
+
+### When to Invoke
+- When beta is needed
+
+### Process
+1. Do beta
+`
+	newBlock := "## Skill: Alpha Revised\n- Slug: alpha-skill\n- Summary: Updated alpha\n\n### When to Invoke\n- When revised alpha is needed\n\n### Process\n1. Do revised alpha\n"
+	got, err := replaceSkillBlock(ledger, "alpha-skill", newBlock)
+	if err != nil {
+		t.Fatalf("replaceSkillBlock failed: %v", err)
+	}
+	if !strings.Contains(got, "Alpha Revised") {
+		t.Error("replacement block not found in output")
+	}
+	if strings.Contains(got, "Does alpha things") {
+		t.Error("old alpha block still present")
+	}
+	if !strings.Contains(got, "Beta Skill") {
+		t.Error("beta block was removed")
+	}
+	if !strings.Contains(got, "Does beta things") {
+		t.Error("beta content was modified")
+	}
+}
+
+func TestReplaceSkillBlockNotFound(t *testing.T) {
+	ledger := "## Skill: Only\n- Slug: only\n- Summary: Only skill\n\nBody\n"
+	_, err := replaceSkillBlock(ledger, "nonexistent", "new")
+	if err == nil {
+		t.Fatal("expected error for missing slug")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRegenUpdatesAllArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	slug := "test-skill"
+
+	// Create .agents/skills/test-skill/ with SKILL.md and mcp_tool.json
+	agentsDir := filepath.Join(dir, ".agents", "skills", slug)
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "SKILL.md"), []byte("old skill"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "mcp_tool.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .claude/skills/test-skill/SKILL.md
+	claudeDir := filepath.Join(dir, ".claude", "skills", slug)
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "SKILL.md"), []byte("old claude"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .codex/instructions/test-skill.md
+	codexDir := filepath.Join(dir, ".codex", "instructions")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(codexDir, slug+".md"), []byte("old codex"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .tasks/skills.md
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	ledger := "## Skill: Test Skill\n- Slug: test-skill\n- Summary: Old summary\n\n### When to Invoke\n- Old trigger\n"
+	if err := os.WriteFile(filepath.Join(tasksDir, "skills.md"), []byte(ledger), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create the updated skill
+	skill := output.Skill{
+		Name:    "Test Skill Updated",
+		Slug:    "test-skill",
+		Summary: "New summary",
+		Body:    "### When to Invoke\n- New trigger\n\n### Process\n1. New step",
+	}
+
+	// Write mcp_tool.json
+	mcpJSON, err := output.BuildMCPToolJSON(skill)
+	if err != nil {
+		t.Fatalf("BuildMCPToolJSON: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "mcp_tool.json"), mcpJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write SKILL.md via ReplaceSkill
+	split := output.BuildSkillSplit(skill)
+	if err := ReplaceSkill(dir, slug, split.Main); err != nil {
+		t.Fatalf("ReplaceSkill: %v", err)
+	}
+
+	// Write platform-specific files
+	specs := output.DefaultSpecs()
+	formats := []output.Format{output.FormatClaude, output.FormatCodex}
+	for _, format := range formats {
+		spec := specs[format]
+		platformPath := filepath.Join(dir, spec.RootDir, output.SkillFilePath(spec, skill))
+		if err := os.MkdirAll(filepath.Dir(platformPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		content := output.BuildSkillContent(skill)
+		if err := os.WriteFile(platformPath, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Update ledger
+	newBlock := formatSkillBlock(skill)
+	updatedLedger, err := replaceSkillBlock(ledger, slug, newBlock)
+	if err != nil {
+		t.Fatalf("replaceSkillBlock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "skills.md"), []byte(updatedLedger), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify all artifacts
+	agentsContent, _ := os.ReadFile(filepath.Join(agentsDir, "SKILL.md"))
+	if !strings.Contains(string(agentsContent), "New summary") {
+		t.Error(".agents/skills/SKILL.md not updated")
+	}
+
+	mcpContent, _ := os.ReadFile(filepath.Join(agentsDir, "mcp_tool.json"))
+	if !strings.Contains(string(mcpContent), "test-skill") {
+		t.Error("mcp_tool.json not updated")
+	}
+
+	claudeContent, _ := os.ReadFile(filepath.Join(claudeDir, "SKILL.md"))
+	if !strings.Contains(string(claudeContent), "New summary") {
+		t.Error(".claude/skills/SKILL.md not updated")
+	}
+
+	codexContent, _ := os.ReadFile(filepath.Join(codexDir, slug+".md"))
+	if !strings.Contains(string(codexContent), "New summary") {
+		t.Error(".codex/instructions/test-skill.md not updated")
+	}
+
+	ledgerContent, _ := os.ReadFile(filepath.Join(tasksDir, "skills.md"))
+	if !strings.Contains(string(ledgerContent), "New summary") {
+		t.Error(".tasks/skills.md not updated")
+	}
+	if strings.Contains(string(ledgerContent), "Old summary") {
+		t.Error(".tasks/skills.md still has old content")
+	}
+}
+
+func TestRegenPreservesOtherSkills(t *testing.T) {
+	dir := t.TempDir()
+
+	// Set up two skills in .agents/skills/
+	for _, slug := range []string{"skill-a", "skill-b"} {
+		skillDir := filepath.Join(dir, ".agents", "skills", slug)
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		content := fmt.Sprintf("# %s\n\nOriginal content for %s.\n", slug, slug)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Set up ledger with two skills
+	ledger := `## Skill: Skill A
+- Slug: skill-a
+- Summary: First skill
+
+### Process
+1. Step A
+
+## Skill: Skill B
+- Slug: skill-b
+- Summary: Second skill
+
+### Process
+1. Step B
+`
+	tasksDir := filepath.Join(dir, ".tasks")
+	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "skills.md"), []byte(ledger), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Regen skill-a only
+	newSkill := output.Skill{
+		Name:    "Skill A Revised",
+		Slug:    "skill-a",
+		Summary: "Revised first skill",
+		Body:    "### Process\n1. Revised step A",
+	}
+	split := output.BuildSkillSplit(newSkill)
+	if err := ReplaceSkill(dir, "skill-a", split.Main); err != nil {
+		t.Fatalf("ReplaceSkill: %v", err)
+	}
+	newBlock := formatSkillBlock(newSkill)
+	updatedLedger, err := replaceSkillBlock(ledger, "skill-a", newBlock)
+	if err != nil {
+		t.Fatalf("replaceSkillBlock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "skills.md"), []byte(updatedLedger), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify skill-b is unchanged
+	bContent, _ := os.ReadFile(filepath.Join(dir, ".agents", "skills", "skill-b", "SKILL.md"))
+	if !strings.Contains(string(bContent), "Original content for skill-b") {
+		t.Error("skill-b SKILL.md was modified")
+	}
+	ledgerBytes, _ := os.ReadFile(filepath.Join(tasksDir, "skills.md"))
+	if !strings.Contains(string(ledgerBytes), "Second skill") {
+		t.Error("skill-b ledger entry was modified")
+	}
+	if !strings.Contains(string(ledgerBytes), "Revised first skill") {
+		t.Error("skill-a ledger entry not updated")
 	}
 }

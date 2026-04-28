@@ -270,7 +270,7 @@ func runRegen(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build PromptIR (minimal, from existing context)
-	outputFormats, err := parseOutputFormats(outputSwarm)
+	outputFormats, _, err := parseOutputFormats(outputSwarm)
 	if err != nil {
 		return fmt.Errorf("invalid --output-swarm: %w", err)
 	}
@@ -336,9 +336,57 @@ func runRegen(cmd *cobra.Command, args []string) error {
 	regenSkill := regenSkills[0]
 	split := output.BuildSkillSplit(regenSkill)
 
-	// Replace the skill in the bundle
+	// Replace the skill in the bundle (.agents/skills/SLUG/SKILL.md)
 	if err := ReplaceSkill(absOutput, slug, split.Main); err != nil {
 		return fmt.Errorf("replace skill: %w", err)
+	}
+
+	// Write mcp_tool.json
+	mcpJSON, err := output.BuildMCPToolJSON(regenSkill)
+	if err != nil {
+		return fmt.Errorf("build MCP tool for %s: %w", slug, err)
+	}
+	mcpPath := filepath.Join(absOutput, ".agents", "skills", slug, "mcp_tool.json")
+	if err := os.WriteFile(mcpPath, mcpJSON, 0644); err != nil {
+		return fmt.Errorf("write mcp_tool.json for %s: %w", slug, err)
+	}
+
+	// Write references/ split if applicable
+	if split.References != "" {
+		refPath := filepath.Join(absOutput, ".agents", "skills", slug, split.RefPath)
+		if err := os.MkdirAll(filepath.Dir(refPath), 0755); err != nil {
+			return fmt.Errorf("create references dir: %w", err)
+		}
+		if err := os.WriteFile(refPath, []byte(split.References), 0644); err != nil {
+			return fmt.Errorf("write references for %s: %w", slug, err)
+		}
+	}
+
+	// Update platform-specific trees
+	specs := output.DefaultSpecs()
+	for _, format := range outputFormats {
+		spec, ok := specs[format]
+		if !ok {
+			continue
+		}
+		platformPath := filepath.Join(absOutput, spec.RootDir, output.SkillFilePath(spec, regenSkill))
+		if err := os.MkdirAll(filepath.Dir(platformPath), 0755); err != nil {
+			continue
+		}
+		content := output.BuildSkillContent(regenSkill)
+		if err := os.WriteFile(platformPath, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write platform skill %s: %w", platformPath, err)
+		}
+	}
+
+	// Update .tasks/skills.md ledger
+	newBlock := formatSkillBlock(regenSkill)
+	updatedLedger, err := replaceSkillBlock(string(skillsContent), slug, newBlock)
+	if err != nil {
+		return fmt.Errorf("update skills ledger: %w", err)
+	}
+	if err := os.WriteFile(skillsPath, []byte(updatedLedger), 0644); err != nil {
+		return fmt.Errorf("write skills ledger: %w", err)
 	}
 
 	// Clean up temp file
@@ -346,7 +394,71 @@ func runRegen(cmd *cobra.Command, args []string) error {
 
 	green.Printf("Successfully regenerated skill: %s\n", slug)
 	fmt.Printf("Updated: %s\n", filepath.Join(absOutput, ".agents", "skills", slug, "SKILL.md"))
+	fmt.Printf("Updated: %s\n", mcpPath)
+	if split.References != "" {
+		fmt.Printf("Updated: %s\n", filepath.Join(absOutput, ".agents", "skills", slug, split.RefPath))
+	}
+	for _, format := range outputFormats {
+		if spec, ok := specs[format]; ok {
+			fmt.Printf("Updated: %s\n", filepath.Join(absOutput, spec.RootDir, output.SkillFilePath(spec, regenSkill)))
+		}
+	}
+	fmt.Printf("Updated: %s\n", skillsPath)
 	return nil
+}
+
+// replaceSkillBlock replaces the block for targetSlug in the skills ledger content.
+// It finds the "## Skill: Name" heading whose body contains "Slug: targetSlug"
+// and replaces everything from that heading to the next "## Skill:" or EOF.
+func replaceSkillBlock(content, targetSlug, newBlock string) (string, error) {
+	lines := strings.Split(content, "\n")
+	slugRe := regexp.MustCompile(`(?mi)^(?:-\s*)?Slug:\s*(.+?)\s*$`)
+	type blockRange struct {
+		start int
+		end   int
+	}
+	var blocks []blockRange
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## Skill:") || strings.HasPrefix(trimmed, "### Skill:") {
+			blocks = append(blocks, blockRange{start: i, end: len(lines)})
+			if len(blocks) > 1 {
+				blocks[len(blocks)-2].end = i
+			}
+		}
+	}
+
+	for _, br := range blocks {
+		blockText := strings.Join(lines[br.start:br.end], "\n")
+		matches := slugRe.FindStringSubmatch(blockText)
+		if len(matches) >= 2 && textutil.Slugify(strings.TrimSpace(matches[1])) == targetSlug {
+			var result []string
+			result = append(result, lines[:br.start]...)
+			result = append(result, newBlock)
+			if br.end < len(lines) {
+				result = append(result, lines[br.end:]...)
+			}
+			return strings.Join(result, "\n"), nil
+		}
+	}
+	return "", fmt.Errorf("skill slug %q not found in ledger", targetSlug)
+}
+
+// formatSkillBlock renders a skill as a ledger block for .tasks/skills.md.
+func formatSkillBlock(skill output.Skill) string {
+	var b strings.Builder
+	b.WriteString("## Skill: ")
+	b.WriteString(skill.Name)
+	b.WriteString("\n- Slug: ")
+	b.WriteString(skill.Slug)
+	b.WriteString("\n- Summary: ")
+	b.WriteString(skill.Summary)
+	b.WriteString("\n\n")
+	b.WriteString(skill.Body)
+	if !strings.HasSuffix(skill.Body, "\n") {
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // validationReport accumulates validation findings for the structured output file.
@@ -400,6 +512,18 @@ func (r *validationReport) recordLLMCall(taskName string, resp *executor.Respons
 	})
 }
 
+func (r *validationReport) recordLLMCallFromResult(result swarm.Result) {
+	r.llmCalls++
+	r.inputTokens += result.InputTokens
+	r.outputTokens += result.OutputTokens
+	r.perTaskCosts = append(r.perTaskCosts, taskCost{
+		TaskName:     result.Task.Name,
+		InputTokens:  result.InputTokens,
+		OutputTokens: result.OutputTokens,
+		Duration:     result.Duration,
+	})
+}
+
 type revisionResult struct {
 	File     string
 	Success  bool
@@ -419,7 +543,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	bold.Printf("swarm-maker %s -- AI Swarm Maker\n", Version)
 	fmt.Println()
 
-	outputFormats, err := parseOutputFormats(outputSwarm)
+	outputFormats, customSpecPaths, err := parseOutputFormats(outputSwarm)
 	if err != nil {
 		return fmt.Errorf("invalid --output-swarm: %w", err)
 	}
@@ -692,14 +816,17 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 
 	// Pre-flight, Phase 3, and post-generation evidence scan are skipped
 	// when incremental regeneration detects unchanged source content.
-	var swarmLLMCalls, swarmInputTokens, swarmOutputTokens int
+	var preFlightResp *executor.Response
+	var generationResults []swarm.Result
 	if !incrementalSkip {
 		// Pre-flight source validation: one short LLM call to judge whether the
 		// source material is rich enough to produce useful agent skills. Costs ~$0.01
 		// to potentially save 9+ expensive generation calls ($1-5) on garbage input.
 		bold.Println("[Pre-flight] Validating source material sufficiency...")
-		if err := runPreFlightValidation(exec, ingested, complexity); err != nil {
-			return err
+		var preFlightErr error
+		preFlightResp, preFlightErr = runPreFlightValidation(exec, ingested, complexity)
+		if preFlightErr != nil {
+			return preFlightErr
 		}
 		green.Println("  Source material: SUFFICIENT")
 		fmt.Println()
@@ -764,14 +891,8 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Estimate cost from swarm generation tasks (v1: rough char/4 estimate)
-		for _, t := range append(phaseATasks, phaseBTasks...) {
-			swarmInputTokens += len(t.Prompt) / 4
-		}
-		for _, r := range append(phaseAResults, phaseBResults...) {
-			swarmOutputTokens += len(r.Content) / 4
-		}
-		swarmLLMCalls = len(phaseATasks) + len(phaseBTasks)
+		// Collect generation results for per-task cost tracking
+		generationResults = append(phaseAResults, phaseBResults...)
 	} else {
 		bold.Println("[3/5] Skipped -- source unchanged, reusing existing ledger files")
 		fmt.Println()
@@ -798,19 +919,22 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	bold.Println("[4/5] Validating...")
 
 	report := &validationReport{
-		complexity:       complexity,
-		evidenceCount:    len(ingested.Evidence),
-		evidencePath:     evidencePath,
-		irManifestPath:   irManifestPath,
-		promptPackName:   promptPack.Name,
-		promptPackSource: promptPack.Source(),
-		promptPackDigest: promptPack.Digest(),
-		promptPackReview: promptPackReview,
-		routingEvents:    routingEvents,
-		llmCalls:          swarmLLMCalls + 1, // +1 for pre-flight
-		inputTokens:       swarmInputTokens,
-		outputTokens:      swarmOutputTokens,
+		complexity:        complexity,
+		evidenceCount:     len(ingested.Evidence),
+		evidencePath:      evidencePath,
+		irManifestPath:    irManifestPath,
+		promptPackName:    promptPack.Name,
+		promptPackSource:  promptPack.Source(),
+		promptPackDigest:  promptPack.Digest(),
+		promptPackReview:  promptPackReview,
+		routingEvents:     routingEvents,
 		injectionWarnings: collectInjectionWarnings(ingested.Evidence),
+	}
+	// Record pre-flight call cost
+	report.recordLLMCall("preflight", preFlightResp)
+	// Record generation call costs from swarm results
+	for _, result := range generationResults {
+		report.recordLLMCallFromResult(result)
 	}
 	failValidation := func(err error) error {
 		if reportErr := writeValidationReport(tasksDir, report); reportErr != nil {
@@ -1011,7 +1135,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	}
 	green.Println("  Render parity: all selected platform trees match the shared .tasks decomposition")
 
-	if err := writeRenderedOutputSwarms(absOutput, outputFormats, projectName, primary.Name, critic.Name, renderedBundle); err != nil {
+	if err := writeRenderedOutputSwarms(absOutput, outputFormats, projectName, primary.Name, critic.Name, renderedBundle, customSpecPaths); err != nil {
 		report.renderError = err.Error()
 		return failValidation(fmt.Errorf("writing output swarms: %w", err))
 	}
@@ -1823,7 +1947,7 @@ func validationPassed(r *validationReport) bool {
 			return false
 		}
 	}
-	return r.postScreen != nil && !r.postScreen.NeedsLLMReview
+	return r.postScreen != nil && !r.postScreen.HasConcreteFlags()
 }
 
 func reviewStatus(ok bool) string {
@@ -1986,14 +2110,14 @@ Do not explain your reasoning beyond the verdict line.`,
 // runPreFlightValidation sends one short LLM call to judge whether the source
 // material is rich enough to produce useful agent skills. If the LLM returns
 // INSUFFICIENT, the run is aborted before the 9-task swarm.
-func runPreFlightValidation(exec *executor.Executor, ingested *ingestion.Context, complexity *ingestion.SourceComplexity) error {
+func runPreFlightValidation(exec *executor.Executor, ingested *ingestion.Context, complexity *ingestion.SourceComplexity) (*executor.Response, error) {
 	prompt := buildPreFlightPrompt(ingested, complexity)
 	resp, err := exec.RunPreFlight(prompt)
 	if err != nil {
 		// If the pre-flight call itself fails (timeout, LLM error), log a warning
 		// and proceed -- we don't want infrastructure failures to block the pipeline.
 		fmt.Fprintf(os.Stderr, "WARNING: pre-flight validation call failed: %v (proceeding anyway)\n", err)
-		return nil
+		return nil, nil
 	}
 
 	output := strings.TrimSpace(resp.Output)
@@ -2009,10 +2133,10 @@ func runPreFlightValidation(exec *executor.Executor, ingested *ingestion.Context
 			Category: ingestion.EvidenceCategoryInputQualityGate,
 			Detail:   detail,
 		})
-		return fmt.Errorf("Insufficient source material for skill generation. %s", explanation)
+		return resp, fmt.Errorf("Insufficient source material for skill generation. %s", explanation)
 	}
 
-	return nil
+	return resp, nil
 }
 
 // sanitizeProjectName strips characters that could cause shell injection or

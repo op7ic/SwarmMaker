@@ -9,6 +9,8 @@
 package ingestion
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -154,5 +156,43 @@ paths:
 	}
 	if result.Endpoints[0].Parameters[0].Type != "string" {
 		t.Errorf("expected param type 'string', got %q", result.Endpoints[0].Parameters[0].Type)
+	}
+}
+
+func TestOpenAPIDetectionFromFile(t *testing.T) {
+	dir := t.TempDir()
+	spec := `openapi: "3.0.0"
+info:
+  title: Test API
+  version: "1.0.0"
+paths:
+  /items:
+    get:
+      summary: List items
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+`
+	specPath := filepath.Join(dir, "api.yaml")
+	if err := os.WriteFile(specPath, []byte(spec), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := ReadFolder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, f := range ctx.Files {
+		if f.FileType == "openapi" {
+			found = true
+			if !strings.Contains(f.Content, "GET /items") {
+				t.Errorf("expected structured endpoint in content, got: %s", f.Content[:200])
+			}
+		}
+	}
+	if !found {
+		t.Error("OpenAPI spec not detected as fileType 'openapi'")
 	}
 }

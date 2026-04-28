@@ -217,6 +217,26 @@ func TestE2EFullPipelineSuccess(t *testing.T) {
 			t.Fatalf("expected %s in output root: %v", rel, err)
 		}
 	}
+
+	// Verify mcp_tool.json exists for at least one skill
+	agentsSkillsDir := filepath.Join(outputDir, ".agents", "skills")
+	skillEntries, readErr := os.ReadDir(agentsSkillsDir)
+	if readErr != nil {
+		t.Fatalf("read .agents/skills: %v", readErr)
+	}
+	mcpFound := false
+	for _, entry := range skillEntries {
+		if entry.IsDir() {
+			mcpPath := filepath.Join(agentsSkillsDir, entry.Name(), "mcp_tool.json")
+			if _, statErr := os.Stat(mcpPath); statErr == nil {
+				mcpFound = true
+				break
+			}
+		}
+	}
+	if !mcpFound {
+		t.Fatal("expected at least one mcp_tool.json in .agents/skills/*/")
+	}
 }
 
 func TestE2ENoProvider(t *testing.T) {
@@ -362,6 +382,91 @@ func TestE2EApproveWithFindings(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "concrete findings") {
 		t.Fatalf("expected 'concrete findings' in error, got:\n%s", stderr.String())
+	}
+}
+
+func TestE2EMCPToolProperties(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+
+	swarmMeBin, harnessDir := buildE2EBinaries(t)
+	inputDir := fixtureDir(t)
+	outputDir := t.TempDir()
+
+	stdoutStr, stderrStr, err := runSwarmMeE2E(t, swarmMeBin, harnessDir, inputDir, outputDir, "--output-swarm", "claude")
+	if err != nil {
+		t.Fatalf("swarm-maker failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdoutStr, stderrStr)
+	}
+
+	// Find all mcp_tool.json files
+	agentsDir := filepath.Join(outputDir, ".agents", "skills")
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		t.Fatalf("read .agents/skills: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no skills found in .agents/skills/")
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		mcpPath := filepath.Join(agentsDir, entry.Name(), "mcp_tool.json")
+		data, err := os.ReadFile(mcpPath)
+		if err != nil {
+			t.Errorf("mcp_tool.json missing for skill %s: %v", entry.Name(), err)
+			continue
+		}
+		if !json.Valid(data) {
+			t.Errorf("mcp_tool.json invalid JSON for skill %s", entry.Name())
+			continue
+		}
+		var tool map[string]interface{}
+		json.Unmarshal(data, &tool)
+		schema, ok := tool["input_schema"].(map[string]interface{})
+		if !ok {
+			t.Errorf("skill %s: input_schema missing or wrong type", entry.Name())
+			continue
+		}
+		props, ok := schema["properties"].(map[string]interface{})
+		if !ok || len(props) == 0 {
+			t.Errorf("skill %s: input_schema.properties is empty — MCP parser failed to extract params", entry.Name())
+		}
+	}
+}
+
+func TestE2ECostBreakdownTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping E2E test in short mode")
+	}
+
+	swarmMeBin, harnessDir := buildE2EBinaries(t)
+	inputDir := fixtureDir(t)
+	outputDir := t.TempDir()
+
+	stdoutStr, stderrStr, err := runSwarmMeE2E(t, swarmMeBin, harnessDir, inputDir, outputDir, "--output-swarm", "claude")
+	if err != nil {
+		t.Fatalf("swarm-maker failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdoutStr, stderrStr)
+	}
+
+	reportPath := filepath.Join(outputDir, ".tasks", "validation-report.md")
+	content, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read validation report: %v", err)
+	}
+	report := string(content)
+	if !strings.Contains(report, "## Cost Breakdown") {
+		t.Fatal("validation report missing Cost Breakdown section")
+	}
+	// Verify table has generation task entries
+	for _, task := range []string{"context", "tasks", "skills", "agents"} {
+		if !strings.Contains(report, task) {
+			t.Errorf("Cost Breakdown table missing entry for generation task %q", task)
+		}
+	}
+	if !strings.Contains(report, "**Total**") {
+		t.Error("Cost Breakdown table missing Total row")
 	}
 }
 

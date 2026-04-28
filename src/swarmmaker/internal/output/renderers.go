@@ -655,6 +655,12 @@ func writeAgentList(b *strings.Builder, agents []Agent) {
 	}
 }
 
+// SkillFilePath returns the platform-relative path for a skill file within a
+// tree spec. For Claude: skills/SLUG/SKILL.md; for Codex/Gemini: dir/SLUG.md.
+func SkillFilePath(spec TreeSpec, skill Skill) string {
+	return skillFilePath(spec, skill)
+}
+
 func skillFilePath(spec TreeSpec, skill Skill) string {
 	slug := skillSlug(skill.Slug)
 	switch spec.Format {

@@ -527,6 +527,42 @@ func TestSwarmRunMinLenValidation(t *testing.T) {
 	}
 }
 
+func TestResultTokenPropagation(t *testing.T) {
+	bin := buildSwarmHarness(t)
+	t.Setenv("SWARMAKER_TEST_BEHAVIOR", "write-file")
+
+	outputDir := t.TempDir()
+	tool := swarmTool("claude", bin)
+	exec := executor.New(tool, tool, false)
+	exec.Timeout = 10 * time.Second
+
+	sw := &Swarm{
+		Exec:        exec,
+		OutputDir:   outputDir,
+		Concurrency: 1,
+	}
+
+	tasks := []Task{
+		{Name: "token-test", OutputFile: "tok.md", Prompt: "Generate tokens", MinLen: 10},
+	}
+
+	results := sw.Run(tasks)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Error != nil {
+		t.Fatalf("task failed: %v", results[0].Error)
+	}
+	// The executor estimates tokens from prompt/output length.
+	// With a non-empty prompt the input tokens should be positive.
+	if results[0].InputTokens <= 0 {
+		t.Errorf("InputTokens = %d, want > 0", results[0].InputTokens)
+	}
+	if results[0].OutputTokens <= 0 {
+		t.Errorf("OutputTokens = %d, want > 0", results[0].OutputTokens)
+	}
+}
+
 func testPromptIR() prompts.PromptIR {
 	return prompts.PromptIR{
 		ProjectName:          "TestProject",

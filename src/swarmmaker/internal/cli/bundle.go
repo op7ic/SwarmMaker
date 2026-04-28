@@ -25,8 +25,6 @@ import (
 	"github.com/op7ic/swarmmaker/internal/textutil"
 )
 
-var customSpecPaths []string
-
 var ledgerFiles = []string{
 	".tasks/context.md",
 	".tasks/tasks.md",
@@ -76,7 +74,7 @@ type renderedOutputBundle struct {
 	Manifests []output.Manifest
 }
 
-func emitOutputSwarms(outputDir, rootDir string, formats []output.Format, projectName, primaryName, criticName string, files []string) error {
+func emitOutputSwarms(outputDir, rootDir string, formats []output.Format, projectName, primaryName, criticName string, files []string, customSpecs []string) error {
 	bundle, err := renderOutputSwarms(rootDir, formats, projectName, primaryName, criticName, files)
 	if err != nil {
 		return err
@@ -84,7 +82,7 @@ func emitOutputSwarms(outputDir, rootDir string, formats []output.Format, projec
 	if parityIssues := validateRenderedOutputParity(bundle); len(parityIssues) > 0 {
 		return fmt.Errorf("render parity validation failed with %d error(s)", swarm.ErrorCount(parityIssues))
 	}
-	return writeRenderedOutputSwarms(outputDir, formats, projectName, primaryName, criticName, bundle)
+	return writeRenderedOutputSwarms(outputDir, formats, projectName, primaryName, criticName, bundle, customSpecs)
 }
 
 func renderOutputSwarms(rootDir string, formats []output.Format, projectName, primaryName, criticName string, files []string) (renderedOutputBundle, error) {
@@ -114,7 +112,7 @@ func renderOutputSwarms(rootDir string, formats []output.Format, projectName, pr
 	}, nil
 }
 
-func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projectName, primaryName, criticName string, bundle renderedOutputBundle) error {
+func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projectName, primaryName, criticName string, bundle renderedOutputBundle, customSpecs []string) error {
 	// Stage all files in a temp dir in the same parent as outputDir so that
 	// os.Rename works (same mount point). On any failure, clean up staging.
 	absOutput, err := filepath.Abs(outputDir)
@@ -151,7 +149,7 @@ func writeRenderedOutputSwarms(outputDir string, formats []output.Format, projec
 		}
 	}
 	// Render custom platform outputs.
-	for _, specPath := range customSpecPaths {
+	for _, specPath := range customSpecs {
 		spec, loadErr := output.LoadCustomSpec(specPath)
 		if loadErr != nil {
 			return fmt.Errorf("load custom spec: %w", loadErr)
@@ -643,10 +641,10 @@ func bundleSlug(value string) string {
 	return slug
 }
 
-func parseOutputFormats(formatName string) ([]output.Format, error) {
+func parseOutputFormats(formatName string) ([]output.Format, []string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(formatName))
 	if normalized == "" {
-		return nil, fmt.Errorf("output swarm is required")
+		return nil, nil, fmt.Errorf("output swarm is required")
 	}
 	names := []string{normalized}
 	if normalized == "all" {
@@ -656,7 +654,7 @@ func parseOutputFormats(formatName string) ([]output.Format, error) {
 	}
 	seen := make(map[output.Format]struct{}, len(names))
 	formats := make([]output.Format, 0, len(names))
-	customSpecPaths = nil
+	var customSpecs []string
 	for _, name := range names {
 		trimmed := strings.TrimSpace(name)
 		switch {
@@ -678,14 +676,14 @@ func parseOutputFormats(formatName string) ([]output.Format, error) {
 		case strings.HasPrefix(trimmed, "custom:"):
 			specPath := strings.TrimPrefix(trimmed, "custom:")
 			if strings.TrimSpace(specPath) == "" {
-				return nil, fmt.Errorf("custom format requires a spec path: custom:/path/to/spec.yaml")
+				return nil, nil, fmt.Errorf("custom format requires a spec path: custom:/path/to/spec.yaml")
 			}
-			customSpecPaths = append(customSpecPaths, specPath)
+			customSpecs = append(customSpecs, specPath)
 		default:
-			return nil, fmt.Errorf("unsupported output swarm %q", formatName)
+			return nil, nil, fmt.Errorf("unsupported output swarm %q", formatName)
 		}
 	}
-	return canonicalOutputFormats(formats), nil
+	return canonicalOutputFormats(formats), customSpecs, nil
 }
 
 func platformRootDir(format output.Format) (string, error) {
