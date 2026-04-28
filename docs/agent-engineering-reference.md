@@ -156,5 +156,3 @@ Two-phase generation (Phase A: foundational files first, Phase B: dependent file
 - Shinn, N., et al. (2023). Reflexion: Language Agents with Verbal Reinforcement Learning. NeurIPS.
 - Cognition AI. (2025/2026). Don't Build Multi-Agents / Multi-Agents: What's Actually Working.
 - ETH Zurich. (2025). Evaluation of LLM-generated vs developer-written AGENTS.md files.
-
-For the complete research analysis, see the full report used to design SwarmMaker's pipeline architecture.
