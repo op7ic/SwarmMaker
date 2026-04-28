@@ -10,9 +10,9 @@ SwarmMaker automates this as a **two-stage compiler**:
 
 ```mermaid
 graph LR
-    A["Loose Docs<br/>notes, specs,<br/>API docs, scratch"] -->|Stage 1<br/>LLM-backed| B[".tasks/ ledger<br/>9 ledger files<br/>7 IR artifacts<br/>evidence.json"]
+    A["Loose Docs<br/>notes, specs,<br/>API docs, OpenAPI"] -->|Stage 1<br/>LLM-backed| B[".tasks/ ledger<br/>9 ledger files<br/>7 IR artifacts<br/>evidence.json"]
     B --> C{"Validation<br/>Programmatic<br/>Pre-screen<br/>Adversarial review<br/>Revision (max 3)<br/>Parity check"}
-    C -->|pass| D["Stage 2: Render<br/>.claude/ .codex/ .gemini/<br/>.agents/skills/<br/>README + install.sh"]
+    C -->|pass| D["Stage 2: Render<br/>.claude/ .codex/ .gemini/<br/>.agents/skills/ + mcp_tool.json<br/>custom platforms"]
     C -->|fail| E["validation-report.md"]
 ```
 
@@ -24,16 +24,16 @@ graph LR
 
 | Phase | LLM Calls | Input | Output | Failure Mode |
 |-------|-----------|-------|--------|--------------|
-| 1. Ingest | 0 | Source folder | Evidence manifest, complexity analysis | Missing/unreadable files recorded, not hidden; basic sanity gate rejects empty dirs |
+| 1. Ingest | 0 | Source folder | Evidence manifest, complexity analysis, OpenAPI parsing | Missing/unreadable files recorded, not hidden; OpenAPI specs parsed into structured endpoints; basic sanity gate rejects empty dirs |
 | 2. IR Emit | 0 | Ingestion output + routing | 7 JSON artifacts under `.tasks/ir/` | Contract validation rejects malformed schemas |
 | 2.5 Pre-flight | 1 | Summary + complexity metrics | SUFFICIENT/INSUFFICIENT verdict | Rejects material too thin for skill decomposition (~$0.01) |
 | 3. Generate | 9 (two-phase) | Compiled prompts + source | 9 `.tasks/` ledger files | Phase A (context+tasks) then Phase B (7 dependent files with ledger context); per-task retry with backoff |
 | 4. Validate | 1-10 | Generated ledger | Validation report | Multi-round: programmatic → pre-screen → adversarial review → revision (up to 3 rounds) → post-screen |
-| 5. Render | 0 | Validated ledger | Platform trees + README + installer | Atomic staged write; parity check across targets |
+| 5. Render | 0 | Validated ledger | Platform trees + MCP tool defs + README + installer | Atomic staged write; MCP tool JSON per skill; parity check across targets; optional custom platform output |
 
 ### Data Flow
 
-The pipeline starts by walking the input folder and recording evidence for every file decision (read, skipped as binary, hidden, oversized, noise directory, symlink, or unreadable). It also detects source code files and infers their language and purpose for tool integration. It then scans PATH for installed LLM CLIs and probes their capabilities and versions. The routing module assigns generator, critic, and renderer roles based on user flags and available providers, logging any fallback (e.g., same-model critique when only one provider is installed).
+The pipeline starts by walking the input folder and recording evidence for every file decision (read, skipped as binary, hidden, oversized, noise directory, symlink, or unreadable). It detects source code files and infers their language and purpose for tool integration. OpenAPI and Swagger specs (`.yaml`, `.yml`, `.json`) are detected automatically and parsed into structured endpoint summaries with methods, parameters, and schemas — giving the LLM accurate API context instead of raw spec text. It then scans PATH for installed LLM CLIs (claude, codex, gemini, ollama) and probes their capabilities and versions. The routing module assigns generator, critic, and renderer roles based on user flags and available providers, logging any fallback (e.g., same-model critique when only one provider is installed).
 
 The pipeline then emits an **Intermediate Representation (IR)**, a set of seven versioned JSON artifacts written to `.tasks/ir/`. The IR captures everything the pipeline knows before any LLM generation begins. It serves three purposes: it gives every downstream prompt a consistent, typed view of the project; it provides a complete audit trail of the decisions made during ingestion and routing; and it allows any step in the pipeline to be reproduced or debugged independently. The seven artifacts are:
 
@@ -57,7 +57,7 @@ After generation, the validation pipeline runs (see below). After each revision 
 
 ```mermaid
 graph TD
-    SRC["Source Folder"] --> INGEST["Ingest + Discover<br/>Walk files, record evidence,<br/>scan PATH for LLM CLIs"]
+    SRC["Source Folder<br/>docs, code, OpenAPI specs"] --> INGEST["Ingest + Discover<br/>Walk files, parse OpenAPI,<br/>scan PATH for LLM CLIs"]
     INGEST --> SANITY{"Sanity Check"}
     SANITY -->|empty dir| REJECT["Reject"]
     SANITY -->|ok| IR["IR Emit + Route<br/>7 JSON artifacts,<br/>assign generator/critic roles"]
@@ -68,8 +68,8 @@ graph TD
     PHASE_B --> VALIDATE{"Validate<br/>Programmatic checks<br/>Pre-screen heuristics<br/>Adversarial LLM review"}
     VALIDATE -->|revise| REPAIR["Citation Repair +<br/>Targeted Revision"]
     REPAIR --> VALIDATE
-    VALIDATE -->|pass| RENDER["Render<br/>.codex/ .claude/ .gemini/<br/>.agents/skills/"]
-    VALIDATE -->|fail| REPORT["validation-report.md"]
+    VALIDATE -->|pass| RENDER["Render<br/>.claude/ .codex/ .gemini/<br/>.agents/skills/ + mcp_tool.json<br/>custom platforms"]
+    VALIDATE -->|fail| REPORT["validation-report.md<br/>+ cost breakdown"]
 ```
 
 ### Agent Decomposition Model
@@ -213,6 +213,14 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
 | `swarm-maker prompt-pack export -o <file>` | Export the default prompt pack for customization |
 | `swarm-maker version` | Print swarm-maker version |
 
+## Per-Skill Regeneration
+
+The `regen` subcommand re-generates a single skill by slug without re-running the full pipeline. It reads the existing `.tasks/` ledger, compiles a focused prompt for the target skill (injecting sibling skill slugs as context), runs one LLM call, validates the output, and atomically replaces only `.agents/skills/<slug>/SKILL.md`. This saves ~18 minutes per iteration compared to a full pipeline run.
+
+```bash
+swarm-maker regen --skill hunt-hashes --input ./notes --model codex -o ./SKILL
+```
+
 ## Output Structure
 
 ```
@@ -228,18 +236,29 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
     ir/                            # 7 versioned JSON artifacts
     evidence.json                  # Ingestion + generation evidence
     manifest.json                  # Build manifest with digests
-    validation-report.md           # Full PASS/FAIL report
+    validation-report.md           # Full PASS/FAIL report + cost breakdown
   .agents/                         # Cross-platform standard path
     skills/
       <skill-slug>/
         SKILL.md                   # Frontmatter + body (platform-agnostic)
-        mcp_tool.json              # MCP-compatible tool definition
-  .codex/                          # Stage 2: platform-specific tree
+        mcp_tool.json              # MCP-compatible tool definition (JSON Schema)
+  .claude/                         # Platform-specific: Claude
+    SKILL.md                       # Skill router
+    README.md                      # Skill bundle readme
+    skills/<skill-slug>/SKILL.md   # Per-skill instruction files
+  .codex/                          # Platform-specific: Codex
     AGENTS.md                      # Agent router with OODA roles
     README.md                      # Skill bundle readme
     instructions/                  # Per-skill instruction files
       index.md
       <skill-slug>.md ...
+  .gemini/                         # Platform-specific: Gemini
+    GEMINI.md                      # Playbook router
+    README.md                      # Skill bundle readme
+    playbooks/                     # Per-skill playbook files
+      index.md
+      <skill-slug>.md ...
+  plugins/{slug}/prompt.md ...     # Custom platform output (if --output-swarm custom:spec.yaml)
   README.md                        # Bundle readme
   REVIEW_CHECKLIST.md              # Human review checklist before deploying
   install.sh                       # Installer (--target, --global)
@@ -247,6 +266,24 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
 ```
 
 `.agents/skills/` is the cross-platform standard path. Every skill is emitted here in addition to the platform-specific tree, using YAML frontmatter (`name`, `description`) for discovery by skill loaders. Each skill also gets an `mcp_tool.json` file containing an [MCP](https://modelcontextprotocol.io/)-compatible tool definition with input schema extracted from the skill's "Inputs Required" section.
+
+### OpenAPI Spec Ingestion
+
+During ingestion, OpenAPI and Swagger specs (`.yaml`, `.yml`, `.json` files containing `openapi:` or `swagger:` keys) are detected automatically and parsed into structured endpoint summaries with methods, parameters, and schemas. This gives the LLM accurate API context instead of raw spec text, producing skills with correct endpoint references and parameter types.
+
+### Custom Platform Renderers
+
+In addition to the built-in Claude, Codex, and Gemini output trees, custom output platforms can be defined via YAML config files:
+
+```yaml
+platform: my-agent-framework
+skill_path: "plugins/{slug}/prompt.md"
+frontmatter: true
+frontmatter_fields: [name, description, version]
+sections: [summary, process, constraints]
+```
+
+Use with `--output-swarm claude,custom:my-platform.yaml`. Custom output is supplemental — at least one standard format is still required.
 
 ## Validation Pipeline
 
@@ -264,7 +301,7 @@ When the verdict is REVISE, only flagged files are regenerated in targeted revis
 
 Finally, when multiple output formats are selected, a render parity check verifies that all platform trees contain the same skills, agent roles, metadata, and source references. Drift between platforms is a hard failure.
 
-The validation report at `.tasks/validation-report.md` is written on both success and failure paths. It includes a Risk Analysis section that counts total process steps across all skills and computes compound reliability estimates at 95% and 99% per-step accuracy, surfacing compounding error risk for long pipelines. If the report file cannot be written, it is dumped to stderr as a last resort.
+The validation report at `.tasks/validation-report.md` is written on both success and failure paths. It includes a per-task Cost Breakdown table (input/output tokens and estimated USD per LLM call) and a Risk Analysis section that counts total process steps across all skills and computes compound reliability estimates at 95% and 99% per-step accuracy, surfacing compounding error risk for long pipelines. If the report file cannot be written, it is dumped to stderr as a last resort.
 
 ```mermaid
 graph TD
@@ -296,32 +333,6 @@ Source code lives in `src/swarmmaker/`. The root Makefile delegates all Go comma
 
 [GoReleaser](https://goreleaser.com/) builds for linux/darwin/windows on amd64/arm64. Version injected via `-X main.version={{.Version}}`.
 
-## Per-Skill Regeneration
-
-The `regen` subcommand re-generates a single skill by slug without re-running the full pipeline. It reads the existing `.tasks/` ledger, compiles a focused prompt for the target skill (injecting sibling skill slugs as context), runs one LLM call, validates the output, and atomically replaces only `.agents/skills/<slug>/SKILL.md`. This saves ~18 minutes per iteration compared to a full pipeline run.
-
-```bash
-swarm-maker regen --skill hunt-hashes --input ./notes --model codex -o ./SKILL
-```
-
-## OpenAPI Spec Ingestion
-
-During ingestion, SwarmMaker detects OpenAPI and Swagger specs (`.yaml`, `.yml`, `.json` files containing `openapi:` or `swagger:` keys) and parses them into structured endpoint summaries instead of treating them as raw text. Extracted endpoints, methods, parameters, and schemas are formatted as structured content that the LLM can decompose into concrete skills with accurate API parameters.
-
-## Custom Platform Renderers
-
-In addition to the built-in Claude, Codex, and Gemini output trees, custom output platforms can be defined via YAML config files:
-
-```yaml
-platform: my-agent-framework
-skill_path: "plugins/{slug}/prompt.md"
-frontmatter: true
-frontmatter_fields: [name, description, version]
-sections: [summary, process, constraints]
-```
-
-Use with `--output-swarm claude,custom:my-platform.yaml`. Custom output is supplemental — at least one standard format is still required.
-
 ## Input Requirements
 
 The pipeline validates source material in two stages before running the 9-task generation swarm:
@@ -337,6 +348,7 @@ Both rejections record an evidence event in `evidence.json` for auditability.
 1. **LLM output is non-deterministic.** Two runs with the same input produce structurally similar but textually different ledgers. The validation pipeline catches drift but cannot guarantee identical output.
 2. **Tool synthesis is planning-only.** The tool synthesis module decides whether tools are needed and what language they should use, but does not generate executable code. Source code files are now detected and referenced in generated skills, but executable tool code is not synthesized.
 3. **Citation density heuristic.** The pre-screen uses a sub-linear formula for expected citation count. Very long documents (>50K chars) may trigger false positives.
+4. **Ollama quality varies by model.** Local models via Ollama produce lower quality output than frontier cloud models. Smaller models may fail validation checks that larger models pass. Use Ollama for iteration and drafting; use cloud providers for final production runs.
 
 ## Design References
 
