@@ -33,11 +33,23 @@ graph LR
 
 ### Data Flow
 
-The pipeline starts by walking the input folder and recording evidence for every file decision (read, skipped as binary, hidden, oversized, noise directory, symlink, or unreadable). It then scans PATH for installed LLM CLIs and probes their capabilities and versions. The routing module assigns generator, critic, and renderer roles based on user flags and available providers, logging any fallback (e.g., same-model critique when only one provider is installed).
+The pipeline starts by walking the input folder and recording evidence for every file decision (read, skipped as binary, hidden, oversized, noise directory, symlink, or unreadable). It also detects source code files and infers their language and purpose for tool integration. It then scans PATH for installed LLM CLIs and probes their capabilities and versions. The routing module assigns generator, critic, and renderer roles based on user flags and available providers, logging any fallback (e.g., same-model critique when only one provider is installed).
 
-Seven versioned JSON artifacts are emitted to `.tasks/ir/`. product definition, source IR, provider capabilities, routing decision, output tree spec, tool synthesis request, and prompt IR with redacted source material. These form the auditable intermediate representation.
+The pipeline then emits an **Intermediate Representation (IR)**, a set of seven versioned JSON artifacts written to `.tasks/ir/`. The IR captures everything the pipeline knows before any LLM generation begins. It serves three purposes: it gives every downstream prompt a consistent, typed view of the project; it provides a complete audit trail of the decisions made during ingestion and routing; and it allows any step in the pipeline to be reproduced or debugged independently. The seven artifacts are:
 
-Before generation, a pre-flight LLM call (~$0.01) evaluates whether the source material is rich enough to decompose into skills. If insufficient, the run exits with a specific explanation of what's missing, saving 9+ expensive generation calls.
+| Artifact | What it captures |
+|----------|-----------------|
+| `product-definition.json` | Project name, target output formats, generator/critic/renderer providers |
+| `source-ir.json` | Every ingested file with path, type, size, and content digest |
+| `provider-capabilities.json` | Discovered LLM CLIs, their versions, and supported capabilities |
+| `routing-decision.json` | Which provider was assigned to each role and any fallback events |
+| `output-tree-spec.json` | The target platform tree structure (paths, required files, metadata) |
+| `tool-synthesis-request.json` | Whether helper tools are needed, which languages were detected, and what evidence supports the decision |
+| `prompt-ir.json` | The prompt metadata passed to every LLM call, with source material redacted for secrets |
+
+Each artifact is validated against its schema contract before being written. A SHA-256 digest is computed per artifact and recorded in a manifest (`ir/manifest.json`) so downstream consumers can verify integrity.
+
+Before generation, a pre-flight LLM call (~$0.01) evaluates whether the source material is rich enough to decompose into skills. If insufficient, the run exits with a specific explanation of what is missing, saving 9+ expensive generation calls.
 
 Generation runs in two phases. Phase A produces the foundational files (context.md, tasks.md) first. Phase B then generates the remaining 7 files with a summary of Phase A output injected into their prompts, ensuring cross-file consistency from the start rather than catching contradictions only in review. Tasks within each phase run concurrently (or serially for same-provider) with round-robin assignment across available LLMs.
 
