@@ -4,44 +4,59 @@ Design principles and production patterns that inform SwarmMaker's architecture.
 
 ## SwarmMaker Pipeline Architecture
 
+SwarmMaker is a two-stage compiler. Stage 1 uses LLM calls to decompose loose documentation into a structured `.tasks/` ledger with per-claim citations. Stage 2 is a deterministic, LLM-free render from that ledger into platform-specific skill trees. The pipeline enforces quality at every boundary: input quality gates prevent wasted LLM spend, two-phase generation reduces cross-file contradictions, and a multi-layer validation pipeline catches fabrication, citation drift, and schema violations before any output is written.
+
 ```mermaid
 graph TD
-    INPUT["Loose Documentation<br/>notes, specs, API docs"] --> INGEST["Ingest + Discover<br/>Evidence recording,<br/>LLM CLI detection"]
-    INGEST --> GATE{"Quality Gates<br/>Sanity check (free)<br/>LLM pre-flight ($0.01)"}
-    GATE -->|insufficient| REJECT["Reject with<br/>explanation"]
-    GATE -->|sufficient| IR["IR Emit<br/>7 versioned JSON<br/>artifacts"]
-    IR --> PHASE_A["Phase A: Generate<br/>context.md + tasks.md<br/>(foundational)"]
-    PHASE_A --> PHASE_B["Phase B: Generate<br/>7 dependent files<br/>(with ledger context)"]
-    PHASE_B --> VALIDATE{"Validate<br/>Programmatic checks<br/>Pre-screen heuristics<br/>Adversarial LLM review<br/>Citation path repair"}
-    VALIDATE -->|revise| VALIDATE
-    VALIDATE -->|pass| RENDER["Render<br/>.codex/ .claude/ .gemini/<br/>.agents/skills/"]
-    VALIDATE -->|fail| REPORT["validation-report.md<br/>+ evidence trail"]
+    INPUT["Loose Documentation"] --> INGEST["Ingest + Discover"]
+    INGEST --> GATE{"Quality Gates"}
+    GATE -->|insufficient| REJECT["Reject"]
+    GATE -->|sufficient| IR["IR Emit"]
+    IR --> PHASE_A["Phase A<br/>context.md + tasks.md"]
+    PHASE_A --> PHASE_B["Phase B<br/>7 dependent files"]
+    PHASE_B --> CHECK["Programmatic Checks"]
+    CHECK --> SCREEN["Pre-Screen"]
+    SCREEN --> REVIEW["Adversarial Review"]
+    REVIEW -->|approve| PARITY["Parity Check"]
+    REVIEW -->|revise| REVISE["Revision + Repair"]
+    REVISE --> SCREEN
+    PARITY --> RENDER["Render Output"]
 ```
+
+The quality gates run in two tiers: a zero-cost sanity check rejects empty directories, then a single LLM pre-flight call (~$0.01) judges whether the source material can produce at least one working skill. Generation runs in two phases -- foundational files first (context.md, tasks.md), then dependent files with a summary of Phase A injected into their prompts. Validation runs programmatic checks, depth-adaptive pre-screening, adversarial LLM review, and up to 3 targeted revision rounds with regression detection and citation path repair.
 
 ## Agent Decomposition (OODA)
 
+Generated agents follow the OODA loop (Observe-Orient-Decide-Act), a decision-cycle framework that maps well to autonomous agent coordination. Each agent is assigned an explicit OODA role with defined handoffs, owned skill slugs, coordination protocols specifying exact data shapes, and error handling derived from source constraints. Multiple agents may share the same role when the domain requires distinct execution concerns within a phase.
+
 ```mermaid
 graph LR
-    O["Observe<br/>Gather input,<br/>preserve evidence"] --> OR["Orient<br/>Analyze, correlate,<br/>decompose"]
-    OR --> D["Decide<br/>Apply rules,<br/>validate constraints"]
-    D --> A["Act<br/>Execute workflows,<br/>produce outputs"]
+    O["Observe<br/>Gather + normalize"] --> OR["Orient<br/>Analyze + correlate"]
+    OR --> D["Decide<br/>Rules + constraints"]
+    D --> A["Act<br/>Execute + output"]
     A -->|feedback| O
 ```
 
+Each generated skill includes numbered process steps (typically 6-12) with decision branches, failure handling, and CHECKPOINT markers for intermediate state persistence. Constraints are split into Required and Prohibited sections derived from source material, and UNKNOWN gates name which process steps they block.
+
 ## Validation Pipeline
+
+Every generated ledger passes through six validation layers. No layer can be skipped. The programmatic layer has veto power over the LLM reviewer -- concrete pre-screen findings block approval even if the adversarial reviewer says APPROVE. Advisory findings (anti-pattern checks like excessive ALL-CAPS or missing coordination protocol sections) inform the reviewer without blocking the build.
 
 ```mermaid
 graph TD
-    L["Generated Ledger"] --> P["Programmatic Checks<br/>Links, leaks, meta-commentary"]
-    P --> S["Pre-Screen<br/>Citations, fabrication,<br/>boilerplate (depth-adaptive)"]
-    S --> R["Adversarial LLM Review<br/>Cross-file consistency"]
-    R -->|approve| PARITY["Parity Check"]
-    R -->|revise| REV["Targeted Revision<br/>+ Citation Path Repair"]
-    REV --> RE["Re-Screen<br/>Regression detection"]
-    RE -->|improved| REV
-    RE -->|clean / max 3| PARITY
-    PARITY --> RESULT["PASS / FAIL<br/>+ Cost Estimate<br/>+ Risk Analysis"]
+    LEDGER["Generated Ledger"] --> PROG["Programmatic Checks"]
+    PROG --> PRE["Pre-Screen Gate"]
+    PRE --> REVIEW["Adversarial LLM Review"]
+    REVIEW -->|approve| PARITY["Render Parity Check"]
+    REVIEW -->|revise| REVISE["Targeted Revision<br/>+ Citation Path Repair"]
+    REVISE --> RECHECK["Re-Screen"]
+    RECHECK -->|flags remain| REVISE
+    RECHECK -->|clear or max 3| PARITY
+    PARITY --> RESULT["PASS / FAIL"]
 ```
+
+The validation report includes a Cost Estimate (total LLM calls, estimated tokens, approximate dollar cost) and a Risk Analysis section that computes compound reliability estimates based on total process steps across all skills.
 
 ## Core Definition
 
