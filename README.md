@@ -113,9 +113,27 @@ Measured on a real 4-file input (10KB source material) producing a codex skill b
 | Output size (skills.md) | ~62 KB | ~88 KB | Varies by generator |
 | Skill count | ~11 | ~10 | Varies by generator |
 
-Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and Required/Prohibited constraints. The validation report includes a per-task cost breakdown table (input/output tokens and estimated USD per LLM call).
+Codex uses `model_reasoning_effort=medium` to avoid multi-minute agentic loops. Claude uses `-p` for direct prompt-to-response. Both produce operational-depth skills with numbered process steps, inline schemas, and Required/Prohibited constraints. The validation report includes a per-task cost breakdown table covering every LLM call in the pipeline.
 
 Scaling: generation time is O(N) in task count (currently fixed at 9). Prompt size is O(S) in source material size. Revision rounds are bounded at 3 with regression detection.
+
+### End-to-End Workflow
+
+The full production workflow is: generate → validate → iterate.
+
+```bash
+# 1. Generate the skill bundle
+swarm-maker --input ./notes --model codex --output-swarm claude -o ./SKILL
+
+# 2. Validate skills are discoverable and triggerable
+swarm-maker validate --bundle ./SKILL --target claude
+
+# 3. Iterate on individual skills without re-running the full pipeline
+swarm-maker regen --skill hash-hunt --input ./notes --model codex -o ./SKILL
+
+# 4. Re-validate after changes
+swarm-maker validate --bundle ./SKILL --target claude
+```
 
 ## Comparison With Alternatives
 
@@ -198,6 +216,9 @@ swarm-maker regen --skill hunt-hashes --input ./notes --model codex -o ./SKILL
 # Custom output platform via YAML spec
 swarm-maker --input ./notes --model claude --output-swarm claude,custom:my-platform.yaml -o ./SKILL
 
+# Validate generated skills against a live LLM
+swarm-maker validate --bundle ./SKILL --target claude
+
 # Custom prompt pack
 swarm-maker prompt-pack export -o ./pack.json   # export, edit, then:
 swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./pack.json -o ./SKILL
@@ -209,13 +230,21 @@ swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./
 |---------|-------------|
 | `swarm-maker discover` | Discover available LLM CLI tools on your system |
 | `swarm-maker regen --skill <slug> --input <dir> --model <provider>` | Regenerate a single skill without re-running the full pipeline |
-| `swarm-maker validate --bundle <dir> --target <provider>` | Validate an installed skill bundle against a target LLM CLI (smoke-test discoverability and triggerability) |
+| `swarm-maker validate --bundle <dir> --target <provider>` | Validate skill discoverability and triggerability against a live LLM CLI |
 | `swarm-maker prompt-pack export -o <file>` | Export the default prompt pack for customization |
 | `swarm-maker version` | Print swarm-maker version |
 
 ## Per-Skill Regeneration
 
-The `regen` subcommand re-generates a single skill by slug without re-running the full pipeline. It reads the existing `.tasks/` ledger, compiles a focused prompt for the target skill (injecting sibling skill slugs as context), runs one LLM call, validates the output, and atomically replaces only `.agents/skills/<slug>/SKILL.md`. This saves ~18 minutes per iteration compared to a full pipeline run.
+The `regen` subcommand re-generates a single skill by slug without re-running the full pipeline. It reads the existing `.tasks/` ledger, compiles a focused prompt for the target skill (injecting sibling skill slugs as context), runs one LLM call, and atomically updates all artifacts for that skill:
+
+- `.agents/skills/<slug>/SKILL.md` — cross-platform skill definition
+- `.agents/skills/<slug>/mcp_tool.json` — MCP tool definition with updated input schema
+- `.agents/skills/<slug>/references/` — progressive disclosure split (if applicable)
+- `.claude/skills/<slug>/SKILL.md`, `.codex/instructions/<slug>.md`, `.gemini/playbooks/<slug>.md` — platform-specific trees
+- `.tasks/skills.md` — ledger source of truth (skill block replaced in-place)
+
+This saves ~18 minutes per iteration compared to a full pipeline run. Sibling skills are preserved unchanged.
 
 ```bash
 swarm-maker regen --skill hunt-hashes --input ./notes --model codex -o ./SKILL
@@ -293,7 +322,10 @@ Source material is scanned for prompt injection patterns (e.g., "ignore previous
 
 The pipeline starts with zero-LLM-cost programmatic checks: file existence, minimum sizes, markdown link integrity, template leak detection (16 known patterns that LLMs might copy from prompt instructions), and meta-commentary filtering (rejecting outputs that describe what they did instead of producing the artifact).
 
-Next, a pre-screen gate runs depth-adaptive heuristics. Shallow sources get lenient citation checks. Deep sources (like our alert triage example with 33 sections) require higher citation density using a sub-linear formula, dimension coverage verification, and amplification ratio checks. Fabrication patterns and boilerplate injection are checked regardless of depth. The pre-screen produces per-file flags: concrete flags (specific problems like "low citation density: 24 citations in 20K chars, expect 25") block the build, while advisory flags (like "missing Process section") inform the reviewer without blocking.
+Next, a pre-screen gate runs depth-adaptive heuristics. Shallow sources get lenient citation checks. Deep sources (like our alert triage example with 33 sections) require higher citation density using a sub-linear formula, dimension coverage verification, and amplification ratio checks. Fabrication patterns and boilerplate injection are checked regardless of depth. The pre-screen produces per-file flags classified as **concrete** or **advisory**:
+
+- **Concrete flags** (e.g., "low citation density: 24 citations in 20K chars, expect 25") are specific, measurable violations. They block the PASS verdict until resolved through revision.
+- **Advisory flags** (e.g., "excessive ALL-CAPS: 22 non-standard uppercase words") are style and quality signals. They are reported in the validation report for human review but do not block the PASS verdict. This prevents the pipeline from failing on cosmetic issues after substantive problems have been fixed.
 
 If concrete flags exist, they are forwarded to the adversarial LLM review, a separate call to the critic provider that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings. Critically, concrete pre-screen findings block approval even if the reviewer says APPROVE because the programmatic layer has veto power over the LLM.
 
@@ -301,7 +333,12 @@ When the verdict is REVISE, only flagged files are regenerated in targeted revis
 
 Finally, when multiple output formats are selected, a render parity check verifies that all platform trees contain the same skills, agent roles, metadata, and source references. Drift between platforms is a hard failure.
 
-The validation report at `.tasks/validation-report.md` is written on both success and failure paths. It includes a per-task Cost Breakdown table (input/output tokens and estimated USD per LLM call) and a Risk Analysis section that counts total process steps across all skills and computes compound reliability estimates at 95% and 99% per-step accuracy, surfacing compounding error risk for long pipelines. If the report file cannot be written, it is dumped to stderr as a last resort.
+The validation report at `.tasks/validation-report.md` is written on both success and failure paths. It includes:
+
+- **Cost Breakdown**: A per-task table showing input tokens, output tokens, and estimated USD for every LLM call — preflight, all 9 generation tasks, adversarial review, and each revision round. Token counts are propagated from the executor (not re-estimated), and the total row is the verified sum of per-task entries.
+- **Risk Analysis**: Counts total process steps across all skills and computes compound reliability estimates at 95% and 99% per-step accuracy, surfacing compounding error risk for long pipelines.
+
+If the report file cannot be written, it is dumped to stderr as a last resort.
 
 ```mermaid
 graph TD
@@ -315,6 +352,35 @@ graph TD
     RECHECK -->|clear| PARITY
     PARITY["Render Parity Check"] --> RESULT["PASS / FAIL"]
 ```
+
+## Bundle Validation
+
+After the pipeline renders output, `swarm-maker validate` smoke-tests the installed skill bundle against a live LLM CLI to verify that skills are both **discoverable** and **triggerable**.
+
+```bash
+# Validate against Claude
+swarm-maker validate --bundle ./SKILL --target claude
+
+# Validate against Codex
+swarm-maker validate --bundle ./SKILL --target codex
+```
+
+The validate command runs two phases:
+
+**Phase 1: Skill Discovery.** All skill slugs, names, and descriptions are loaded from `.agents/skills/*/SKILL.md` frontmatter and injected into a single discovery prompt. The LLM is asked to list every installed skill. Each skill that appears in the response is marked FOUND.
+
+**Phase 2: Skill Triggering.** For each skill, the full skill catalog is injected alongside a use-case prompt derived from the skill's description (e.g., "I need to hunt for credential dumping activity..."). The LLM must respond with the correct skill slug. This tests whether the skill's description is specific enough to be selected over other skills when a matching request arrives.
+
+```
+Skill Validation Report
+   [PASS] credential-theft-hunt: FOUND in skill list, TRIGGERED on test prompt
+   [PASS] hash-ioc-process-arguments: FOUND in skill list, TRIGGERED on test prompt
+   [PASS] keyword-ioc-sweep: FOUND in skill list, TRIGGERED on test prompt
+   ...
+Result: 10/10 skills validated
+```
+
+Validation requires a working LLM CLI. A skill that fails triggering indicates its frontmatter description is too generic or too similar to another skill's description — the skill content may be correct but the routing metadata needs refinement.
 
 ## Development
 
