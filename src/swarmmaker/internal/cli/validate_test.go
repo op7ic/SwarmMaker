@@ -8,6 +8,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -229,6 +230,35 @@ Create runbooks.
 	}
 	if s2.Name != "Runbook Generator" {
 		t.Errorf("runbook-gen Name = %q, want %q", s2.Name, "Runbook Generator")
+	}
+}
+
+func TestBuildSkillCatalog(t *testing.T) {
+	skills := []skillInfo{
+		{Slug: "alert-triage", Name: "Alert Triage", Description: "Classify incoming alerts by severity"},
+		{Slug: "hash-hunt", Name: "hash-hunt", Description: "Hunt for known malicious hashes"},
+		{Slug: "no-desc", Name: "No Description", Description: ""},
+	}
+	catalog := buildSkillCatalog(skills)
+	if !strings.Contains(catalog, "**alert-triage** (Alert Triage): Classify incoming alerts") {
+		t.Errorf("catalog missing alert-triage with name and description, got:\n%s", catalog)
+	}
+	// When name == slug, name should not be repeated in parentheses
+	if strings.Contains(catalog, "(hash-hunt)") {
+		t.Errorf("catalog should not repeat slug as name in parentheses, got:\n%s", catalog)
+	}
+	if !strings.Contains(catalog, "**hash-hunt**: Hunt for known") {
+		t.Errorf("catalog missing hash-hunt, got:\n%s", catalog)
+	}
+	if !strings.Contains(catalog, "**no-desc** (No Description)") {
+		t.Errorf("catalog missing no-desc, got:\n%s", catalog)
+	}
+}
+
+func TestBuildSkillCatalogEmpty(t *testing.T) {
+	catalog := buildSkillCatalog(nil)
+	if catalog != "" {
+		t.Errorf("expected empty catalog for nil skills, got %q", catalog)
 	}
 }
 

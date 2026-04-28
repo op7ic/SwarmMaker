@@ -100,14 +100,19 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 	defer exec.Cleanup()
 
-	// 4. Send discovery prompt: ask the LLM to list all skills.
-	skillNames := make([]string, 0, len(skills))
-	for _, s := range skills {
-		skillNames = append(skillNames, s.Slug)
-	}
+	// 4. Build skill catalog to inject into prompts so the LLM has context.
+	// Without this, the LLM has no way to know what skills exist — it would
+	// be guessing blind. The catalog lists every skill with its slug,
+	// description, and trigger conditions.
+	catalog := buildSkillCatalog(skills)
 
 	bold.Println("Phase 1: Skill discovery")
-	discoveryPrompt := "You have skill files installed. List all available skills by name and briefly describe what each does."
+	fmt.Printf("  Injecting %d skill definitions into discovery prompt...\n", len(skills))
+	discoveryPrompt := fmt.Sprintf(
+		"You have the following skills installed:\n\n%s\n\n"+
+			"List every installed skill by its exact slug name and give a one-sentence description of what each does. "+
+			"Use the slug names exactly as shown above.",
+		catalog)
 	discoveryResp, err := exec.RunPreFlight(discoveryPrompt)
 	discoveryOutput := ""
 	if discoveryResp != nil {
@@ -134,13 +139,19 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	bold.Println("Phase 2: Skill triggering")
 
-	// 6. For each skill, send a trigger prompt.
+	// 6. For each skill, send a trigger prompt with the full skill catalog.
+	// The LLM must pick the correct skill from the catalog given a use-case.
 	for i, s := range skills {
 		triggerDesc := s.Description
 		if triggerDesc == "" {
 			triggerDesc = s.Name
 		}
-		triggerPrompt := fmt.Sprintf("I need to %s. What skill would you use?", strings.ToLower(triggerDesc))
+		triggerPrompt := fmt.Sprintf(
+			"You have the following skills installed:\n\n%s\n\n"+
+				"A user says: \"I need to %s.\"\n\n"+
+				"Which single skill slug from the list above should be used? "+
+				"Reply with the exact slug name.",
+			catalog, strings.ToLower(triggerDesc))
 		triggerResp, triggerErr := exec.RunPreFlight(triggerPrompt)
 		triggerOutput := ""
 		if triggerResp != nil {
@@ -256,6 +267,27 @@ func containsSkillName(output, slug, name string) bool {
 		return true
 	}
 	return false
+}
+
+// buildSkillCatalog formats all skills into a text block that can be injected
+// into LLM prompts. Each skill is listed with its slug, name, and description
+// so the LLM has the full context needed for discovery and triggering.
+func buildSkillCatalog(skills []skillInfo) string {
+	var b strings.Builder
+	for i, s := range skills {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(fmt.Sprintf("- **%s**", s.Slug))
+		if s.Name != "" && s.Name != s.Slug {
+			b.WriteString(fmt.Sprintf(" (%s)", s.Name))
+		}
+		if s.Description != "" {
+			b.WriteString(fmt.Sprintf(": %s", s.Description))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // findTargetTool locates the requested LLM CLI tool.
