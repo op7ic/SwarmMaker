@@ -25,7 +25,7 @@ import (
 const manifestFileName = "manifest.json"
 
 // ArtifactPaths lists the persisted IR files created under the `.tasks/ir`
-// contract directory for one swarm-me run.
+// contract directory for one swarm-maker run.
 type ArtifactPaths struct {
 	Directory                string
 	ManifestPath             string

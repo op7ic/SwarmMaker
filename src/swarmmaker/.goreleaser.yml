@@ -7,8 +7,8 @@ before:
     - go mod tidy
 
 builds:
-  - main: ./cmd/swarm-me
-    binary: swarm-me
+  - main: ./cmd/swarm-maker
+    binary: swarm-maker
     env:
       - CGO_ENABLED=0
     goos:

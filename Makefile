@@ -7,11 +7,11 @@
 
 .PHONY: build install uninstall clean test lint fmt all release
 
-BINARY_NAME=swarm-me
+BINARY_NAME=swarm-maker
 VERSION=0.1.0
 BUILD_DIR=./build
 SRC_DIR=./src/swarmmaker
-CMD=$(SRC_DIR)/cmd/swarm-me
+CMD=$(SRC_DIR)/cmd/swarm-maker
 
 # Install to ~/.local/bin by default (no sudo needed).
 # Override: make install PREFIX=/usr/local
@@ -26,7 +26,7 @@ all: fmt lint test build
 build:
 	@echo "Building $(BINARY_NAME) v$(VERSION)..."
 	@mkdir -p $(BUILD_DIR)
-	cd $(SRC_DIR) && go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) ./cmd/swarm-me
+	cd $(SRC_DIR) && go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/$(BINARY_NAME) ./cmd/swarm-maker
 	@echo "Binary: $(BUILD_DIR)/$(BINARY_NAME)"
 
 install: build
@@ -43,7 +43,7 @@ install: build
 		   echo "    export PATH=\"$(INSTALL_DIR):\$$PATH\""; \
 		   echo "" ;; \
 	esac
-	@echo "Run 'swarm-me --help' to get started."
+	@echo "Run 'swarm-maker --help' to get started."
 
 uninstall:
 	@echo "Removing $(BINARY_NAME) from $(INSTALL_DIR)..."
@@ -68,11 +68,11 @@ fmt:
 release:
 	@echo "Building release binaries v$(VERSION)..."
 	@mkdir -p $(BUILD_DIR)/release
-	cd $(SRC_DIR) && GOOS=linux   GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-linux-amd64 ./cmd/swarm-me
-	cd $(SRC_DIR) && GOOS=linux   GOARCH=arm64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-linux-arm64 ./cmd/swarm-me
-	cd $(SRC_DIR) && GOOS=darwin  GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-darwin-amd64 ./cmd/swarm-me
-	cd $(SRC_DIR) && GOOS=darwin  GOARCH=arm64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-darwin-arm64 ./cmd/swarm-me
-	cd $(SRC_DIR) && GOOS=windows GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-windows-amd64.exe ./cmd/swarm-me
+	cd $(SRC_DIR) && GOOS=linux   GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-linux-amd64 ./cmd/swarm-maker
+	cd $(SRC_DIR) && GOOS=linux   GOARCH=arm64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-linux-arm64 ./cmd/swarm-maker
+	cd $(SRC_DIR) && GOOS=darwin  GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-darwin-amd64 ./cmd/swarm-maker
+	cd $(SRC_DIR) && GOOS=darwin  GOARCH=arm64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-darwin-arm64 ./cmd/swarm-maker
+	cd $(SRC_DIR) && GOOS=windows GOARCH=amd64 go build $(GOFLAGS) $(LDFLAGS) -o ../../$(BUILD_DIR)/release/$(BINARY_NAME)-windows-amd64.exe ./cmd/swarm-maker
 	@echo "Release binaries in $(BUILD_DIR)/release/"
 
 .DEFAULT_GOAL := build

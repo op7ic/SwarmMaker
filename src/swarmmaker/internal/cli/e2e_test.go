@@ -3,8 +3,8 @@
 // Copyright: See LICENSE file
 // Github: https://github.com/op7ic/SwarmMaker
 //
-// End-to-end integration tests for the full swarm-me pipeline.
-// Builds the swarm-me binary and an E2E test harness that masquerades as a
+// End-to-end integration tests for the full swarm-maker pipeline.
+// Builds the swarm-maker binary and an E2E test harness that masquerades as a
 // real LLM CLI, then runs the complete pipeline against realistic fixture
 // inputs. Tests cover: full pipeline success, no-provider error handling,
 // malformed LLM output, multi-target rendering, and pre-screen finding
@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-// buildE2EBinaries compiles both the swarm-me CLI and the E2E harness.
+// buildE2EBinaries compiles both the swarm-maker CLI and the E2E harness.
 // The harness is placed in a directory as "codex" so discovery finds it.
 func buildE2EBinaries(t *testing.T) (swarmMeBin string, harnessDir string) {
 	t.Helper()
@@ -34,17 +34,17 @@ func buildE2EBinaries(t *testing.T) (swarmMeBin string, harnessDir string) {
 
 	modRoot := moduleRoot(t)
 
-	// Build swarm-me CLI
-	swarmMeBin = filepath.Join(binDir, "swarm-me")
+	// Build swarm-maker CLI
+	swarmMeBin = filepath.Join(binDir, "swarm-maker")
 	if runtime.GOOS == "windows" {
 		swarmMeBin += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", swarmMeBin, "./cmd/swarm-me")
+	cmd := exec.Command("go", "build", "-o", swarmMeBin, "./cmd/swarm-maker")
 	cmd.Dir = modRoot
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("building swarm-me: %v\n%s", err, out)
+		t.Fatalf("building swarm-maker: %v\n%s", err, out)
 	}
 
 	// Build E2E harness as "codex" -- the user tests with codex mini
@@ -154,7 +154,7 @@ func TestE2EFullPipelineSuccess(t *testing.T) {
 
 	stdoutStr, stderrStr, err := runSwarmMeE2E(t, swarmMeBin, harnessDir, inputDir, outputDir)
 	if err != nil {
-		t.Fatalf("swarm-me failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdoutStr, stderrStr)
+		t.Fatalf("swarm-maker failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdoutStr, stderrStr)
 	}
 
 	// Verify .tasks/ ledger files exist
@@ -309,7 +309,7 @@ func TestE2EMultiTarget(t *testing.T) {
 
 	_, _, err := runSwarmMeE2E(t, swarmMeBin, harnessDir, inputDir, outputDir, "--output-swarm", "all")
 	if err != nil {
-		t.Fatalf("swarm-me --output-swarm all failed: %v", err)
+		t.Fatalf("swarm-maker --output-swarm all failed: %v", err)
 	}
 
 	// Verify all three output trees exist

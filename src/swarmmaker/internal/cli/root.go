@@ -3,7 +3,7 @@
 // Copyright: See LICENSE file
 // Github: https://github.com/op7ic/SwarmMaker
 //
-// Core pipeline orchestrator for the swarm-me CLI.
+// Core pipeline orchestrator for the swarm-maker CLI.
 // Implements the 5-phase pipeline: (1) ingest source files and discover LLM
 // providers, (2) emit evidence and IR artifacts, (3) run the task-ledger
 // generation swarm, (4) validate with programmatic checks, pre-screening,
@@ -70,15 +70,15 @@ const minReadableFiles = 1
 const preFlightSummaryLimit = 2000
 
 var rootCmd = &cobra.Command{
-	Use:   "swarm-me",
+	Use:   "swarm-maker",
 	Short: "Turn loose documentation into model-specific skill bundles",
 	Long: strings.TrimSpace(`
-swarm-me ingests loose documentation, routes work through installed LLM CLIs,
+swarm-maker ingests loose documentation, routes work through installed LLM CLIs,
 and emits a validated skill bundle.
 
 Typical usage:
-  swarm-me --input ./input --model codex --critique gemini --output-swarm claude --output-folder ./SKILL
-  swarm-me --input ./input --model codex --critique gemini --output-swarm all --output-folder ./SKILL
+  swarm-maker --input ./input --model codex --critique gemini --output-swarm claude --output-folder ./SKILL
+  swarm-maker --input ./input --model codex --critique gemini --output-swarm all --output-folder ./SKILL
 
 Generated ledger artifacts are kept under .tasks/ for evidence and validation.
 The requested model-specific output tree or trees are written under the output folder alongside README.md and install.sh.
@@ -94,9 +94,9 @@ var discoverCmd = &cobra.Command{
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print swarm-me version",
+	Short: "Print swarm-maker version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("swarm-me %s\n", Version)
+		fmt.Printf("swarm-maker %s\n", Version)
 	},
 }
 
@@ -226,7 +226,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	green := color.New(color.FgGreen)
 	yellow := color.New(color.FgYellow)
 	red := color.New(color.FgRed)
-	bold.Printf("swarm-me %s -- AI Swarm Maker\n", Version)
+	bold.Printf("swarm-maker %s -- AI Swarm Maker\n", Version)
 	fmt.Println()
 
 	outputFormats, err := parseOutputFormats(outputSwarm)
@@ -451,7 +451,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	}
 	artifactPaths, err := artifactir.WriteArtifacts(irDir, artifactir.ArtifactInput{
 		ProductName:   projectName,
-		CLIName:       "swarm-me",
+		CLIName:       "swarm-maker",
 		Description:   "Turn loose documentation into model-specific skill bundles rooted in .tasks.",
 		InputRoot:     absPath,
 		OutputRoot:    absOutput,
@@ -469,7 +469,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	}
 	if err := writeIRManifest(irManifestPath, cliIRManifest{
 		ProductName:      projectName,
-		CLIName:          "swarm-me",
+		CLIName:          "swarm-maker",
 		Description:      "Turn loose documentation into model-specific skill bundles.",
 		InputRoot:        absPath,
 		OutputRoot:       absOutput,

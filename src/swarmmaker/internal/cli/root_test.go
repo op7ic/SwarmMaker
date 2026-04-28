@@ -1837,7 +1837,7 @@ func writeTestManifest(t *testing.T, tasksDir string, hash string) {
 	t.Helper()
 	m := cliIRManifest{
 		ProductName:       "test",
-		CLIName:           "swarm-me",
+		CLIName:           "swarm-maker",
 		SourceContentHash: hash,
 	}
 	data, err := json.MarshalIndent(m, "", "  ")

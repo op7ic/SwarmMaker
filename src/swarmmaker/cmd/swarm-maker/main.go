@@ -3,7 +3,7 @@
 // Copyright: See LICENSE file
 // Github: https://github.com/op7ic/SwarmMaker
 //
-// Entry point for the swarm-me CLI binary.
+// Entry point for the swarm-maker CLI binary.
 // Wires the version variable (injected via ldflags at build time) into the
 // CLI package and delegates to cli.Execute(). This is the only file in the
 // binary's main package -- all logic lives in internal/ and prompts/.
@@ -20,7 +20,7 @@ import (
 
 // version is set at build time via ldflags:
 //
-//	go build -ldflags "-X main.version=1.2.3" ./cmd/swarm-me
+//	go build -ldflags "-X main.version=1.2.3" ./cmd/swarm-maker
 var version = "dev"
 
 func main() {

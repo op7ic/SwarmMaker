@@ -248,7 +248,7 @@ func testArtifactInput(root, irDir string) ArtifactInput {
 	manifestPath := filepath.Join(root, ".tasks", "manifest.json")
 	return ArtifactInput{
 		ProductName:   "SwarmMaker",
-		CLIName:       "swarm-me",
+		CLIName:       "swarm-maker",
 		Description:   "Turn loose documentation into agent swarms.",
 		InputRoot:     filepath.Join(root, "input"),
 		OutputRoot:    root,

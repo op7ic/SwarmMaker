@@ -203,7 +203,7 @@ func fallbackEvents(events []string) []contracts.FallbackEvent {
 			FallbackID:          fmt.Sprintf("fallback-%04d", i+1),
 			Category:            fallbackCategory(reason),
 			AuthorizationStatus: contracts.FallbackAuthorizationAuthorized,
-			AuthorizedBy:        "swarm-me-cli-routing",
+			AuthorizedBy:        "swarm-maker-cli-routing",
 			SourceRole:          contracts.ExecutionRoleCritic,
 			Reason:              reason,
 			UserVisibleEffect:   reason,

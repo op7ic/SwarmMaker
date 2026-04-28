@@ -3,7 +3,7 @@
 // Copyright: See LICENSE file
 // Github: https://github.com/op7ic/SwarmMaker
 //
-// Runtime validation subcommand for swarm-me.
+// Runtime validation subcommand for swarm-maker.
 // Loads an installed skill bundle, sends smoke-test prompts to the target
 // LLM CLI, and verifies that skills are discoverable and triggerable.
 

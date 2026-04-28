@@ -292,7 +292,7 @@ func validProductDefinition() contracts.ProductDefinition {
 		SchemaVersion: contracts.SchemaVersionV1,
 		ProductID:     "swarm-maker",
 		Name:          "AI Swarm Maker",
-		CLIName:       "swarm-me",
+		CLIName:       "swarm-maker",
 		Description:   "turn loose docs into agent swarms",
 		InputRoot:     "input",
 		OutputRoot:    "SKILL",

@@ -125,7 +125,7 @@ SwarmMaker does not replace runtime agent frameworks. It produces the **knowledg
 
 ```bash
 make build
-# Binary at ./build/swarm-me
+# Binary at ./build/swarm-maker
 ```
 
 Install to `~/.local/bin`:
@@ -142,12 +142,12 @@ At least one LLM CLI:
 - [codex](https://github.com/openai/codex) (OpenAI)
 - [gemini](https://ai.google.dev/gemini-api/docs/cli) (Google)
 
-Check availability: `swarm-me discover`
+Check availability: `swarm-maker discover`
 
 ## Usage
 
 ```
-swarm-me --input <dir> --model <provider> --output-swarm <format> [flags]
+swarm-maker --input <dir> --model <provider> --output-swarm <format> [flags]
 ```
 
 ### Flags
@@ -171,24 +171,24 @@ swarm-me --input <dir> --model <provider> --output-swarm <format> [flags]
 
 ```bash
 # Claude generates, codex reviews, output as codex skill bundle
-swarm-me --input ./notes --model claude --critique codex --output-swarm codex -o ./SKILL
+swarm-maker --input ./notes --model claude --critique codex --output-swarm codex -o ./SKILL
 
 # All platforms from one run
-swarm-me --input ./notes --model claude --output-swarm all -o ./SKILL
+swarm-maker --input ./notes --model claude --output-swarm all -o ./SKILL
 
 # Custom prompt pack
-swarm-me prompt-pack export -o ./pack.json   # export, edit, then:
-swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pack.json -o ./SKILL
+swarm-maker prompt-pack export -o ./pack.json   # export, edit, then:
+swarm-maker --input ./notes --model claude --output-swarm codex --prompt-pack ./pack.json -o ./SKILL
 ```
 
 ### Subcommands
 
 | Command | Description |
 |---------|-------------|
-| `swarm-me discover` | Discover available LLM CLI tools on your system |
-| `swarm-me validate --bundle <dir> --target <provider>` | Validate an installed skill bundle against a target LLM CLI (smoke-test discoverability and triggerability) |
-| `swarm-me prompt-pack export -o <file>` | Export the default prompt pack for customization |
-| `swarm-me version` | Print swarm-me version |
+| `swarm-maker discover` | Discover available LLM CLI tools on your system |
+| `swarm-maker validate --bundle <dir> --target <provider>` | Validate an installed skill bundle against a target LLM CLI (smoke-test discoverability and triggerability) |
+| `swarm-maker prompt-pack export -o <file>` | Export the default prompt pack for customization |
+| `swarm-maker version` | Print swarm-maker version |
 
 ## Output Structure
 
@@ -258,7 +258,7 @@ graph TD
 ## Development
 
 ```bash
-make build     # Compile to ./build/swarm-me
+make build     # Compile to ./build/swarm-maker
 make test      # All tests with -race
 make fmt       # gofmt
 make lint      # golangci-lint

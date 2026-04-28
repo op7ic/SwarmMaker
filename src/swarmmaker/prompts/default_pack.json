@@ -159,7 +159,7 @@
         "",
         "Required sections:",
         "## CLI Contract",
-        "Document the expected `swarm-me --input ... --model ... --critique ... --output-swarm ... --output-folder ...` contract only as an artifact contract, not as a claimed source fact unless cited.",
+        "Document the expected `swarm-maker --input ... --model ... --critique ... --output-swarm ... --output-folder ...` contract only as an artifact contract, not as a claimed source fact unless cited.",
         "",
         "## Evidence Artifacts",
         "List required evidence files, .tasks artifacts, validation report content, routing events, and generated decomposition retention. Cite manifests directly.",
