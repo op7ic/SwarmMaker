@@ -85,6 +85,22 @@ Handle alert ingestion workflow.
 			wantDesc: "Ingest and normalize security alerts from multiple sources",
 		},
 		{
+			name: "folded scalar description",
+			slug: "hunt-hashes",
+			content: `---
+name: hunt-hashes
+description: >-
+  Hunt for known malicious SHA256 hashes across endpoint
+  telemetry and report matches with process context.
+---
+
+## Instructions
+Hunt for hashes.
+`,
+			wantName: "hunt-hashes",
+			wantDesc: "Hunt for known malicious SHA256 hashes across endpoint telemetry and report matches with process context.",
+		},
+		{
 			name:     "no frontmatter",
 			slug:     "my-skill",
 			content:  "Just some instructions without frontmatter.",

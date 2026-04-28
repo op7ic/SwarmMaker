@@ -149,8 +149,8 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		triggerPrompt := fmt.Sprintf(
 			"You have the following skills installed:\n\n%s\n\n"+
 				"A user says: \"I need to %s.\"\n\n"+
-				"Which single skill slug from the list above should be used? "+
-				"Reply with the exact slug name.",
+				"Which single skill slug from the list above best matches this request? "+
+				"Reply with ONLY the slug name, nothing else. Example: my-skill-slug",
 			catalog, strings.ToLower(triggerDesc))
 		triggerResp, triggerErr := exec.RunPreFlight(triggerPrompt)
 		triggerOutput := ""
@@ -233,7 +233,8 @@ var frontmatterNameLine = regexp.MustCompile(`(?mi)^name:\s*(.+?)\s*$`)
 var frontmatterDescLine = regexp.MustCompile(`(?mi)^description:\s*(.+?)\s*$`)
 
 // parseSkillFrontmatter extracts name and description from a SKILL.md file's
-// YAML-like frontmatter block (delimited by ---).
+// YAML-like frontmatter block (delimited by ---). Handles both inline values
+// (description: some text) and YAML folded scalars (description: >-\n  text).
 func parseSkillFrontmatter(slug, content string) skillInfo {
 	info := skillInfo{Slug: slug, Name: slug}
 
@@ -251,10 +252,57 @@ func parseSkillFrontmatter(slug, content string) skillInfo {
 	if m := frontmatterNameLine.FindStringSubmatch(fmContent); len(m) >= 2 {
 		info.Name = strings.TrimSpace(m[1])
 	}
+
+	// Try inline description first
 	if m := frontmatterDescLine.FindStringSubmatch(fmContent); len(m) >= 2 {
-		info.Description = strings.TrimSpace(m[1])
+		desc := strings.TrimSpace(m[1])
+		if desc != "" && desc != ">-" && desc != ">" && desc != "|" {
+			info.Description = desc
+		}
 	}
+
+	// If description is empty or was a folded scalar marker, parse the
+	// indented continuation lines that follow "description: >-"
+	if info.Description == "" {
+		info.Description = parseFoldedDescription(fmContent)
+	}
+
 	return info
+}
+
+// parseFoldedDescription extracts a YAML folded scalar (>- or >) description.
+// Collects indented lines after the "description:" key until a non-indented
+// line or end of frontmatter.
+func parseFoldedDescription(fmContent string) string {
+	lines := strings.Split(fmContent, "\n")
+	inDesc := false
+	var descParts []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "description:") {
+			// Check if it's a folded scalar marker
+			after := strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+			if after == ">-" || after == ">" || after == "|" || after == "|-" {
+				inDesc = true
+				continue
+			}
+			// Inline value — already handled by regex
+			continue
+		}
+		if inDesc {
+			// Continuation lines are indented (2+ spaces)
+			if len(line) > 0 && (line[0] == ' ' || line[0] == '\t') && trimmed != "" {
+				descParts = append(descParts, trimmed)
+			} else if trimmed == "" {
+				// Blank line within folded scalar — continue
+				continue
+			} else {
+				// Non-indented, non-empty line — end of description
+				break
+			}
+		}
+	}
+	return strings.Join(descParts, " ")
 }
 
 // containsSkillName checks if the LLM output references a skill by slug or name.
@@ -267,6 +315,15 @@ func containsSkillName(output, slug, name string) bool {
 		return true
 	}
 	return false
+}
+
+func truncateOutput(s string, maxLen int) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }
 
 // buildSkillCatalog formats all skills into a text block that can be injected
