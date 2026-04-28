@@ -262,15 +262,10 @@ func ReadFolder(rootPath string) (*Context, error) {
 				FileType:  fileType,
 				LineCount: strings.Count(contentStr, "\n"),
 			})
-			ctx.Evidence = append(ctx.Evidence, EvidenceEntry{
-				Phase:    EvidencePhaseIngestion,
-				Category: EvidenceCategoryReferenceData,
-				RelPath:  relPath,
-				AbsPath:  path,
-				FileType: fileType,
-				Size:     size,
-				Detail:   fmt.Sprintf("classified as reference data (lookup table); content excluded from prompt summary, recorded as %d lines", strings.Count(contentStr, "\n")),
-			})
+			// No per-file evidence entry. Reference data is aggregated
+			// into directory-level summaries after the walk to prevent
+			// individual file paths from leaking into the prompt IR
+			// (which causes the LLM to cite 100+ files individually).
 			return nil
 		}
 
@@ -288,6 +283,29 @@ func ReadFolder(rootPath string) (*Context, error) {
 	}
 
 	ctx.FileCount = len(ctx.Files)
+
+	// Aggregate reference data into directory-level evidence summaries.
+	// Individual file paths are NOT recorded to prevent the LLM from
+	// citing 100+ lookup files individually in generated output.
+	if len(ctx.ReferenceFiles) > 0 {
+		dirCounts := make(map[string]int)
+		dirLines := make(map[string]int)
+		dirSize := make(map[string]int64)
+		for _, rf := range ctx.ReferenceFiles {
+			dir := filepath.Dir(rf.RelPath)
+			dirCounts[dir]++
+			dirLines[dir] += rf.LineCount
+			dirSize[dir] += rf.Size
+		}
+		for dir, count := range dirCounts {
+			ctx.Evidence = append(ctx.Evidence, EvidenceEntry{
+				Phase:    EvidencePhaseIngestion,
+				Category: EvidenceCategoryReferenceData,
+				RelPath:  dir,
+				Detail:   fmt.Sprintf("%d reference data files (%d lines, %d bytes) excluded from prompt; available at source paths for tool integration", count, dirLines[dir], dirSize[dir]),
+			})
+		}
+	}
 
 	// Sort: markdown first, then text, then data, then code.
 	typeOrder := map[string]int{

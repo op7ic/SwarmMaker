@@ -1883,16 +1883,22 @@ func selectLLMs(tools []discovery.LLMTool) (discovery.LLMTool, discovery.LLMTool
 	return primary, critic, nil, nil
 }
 
-// repairCitationPaths fixes near-miss citation path hallucinations in generated
-// files. LLMs occasionally truncate or mangle directory paths while keeping the
-// filename correct (e.g., /mnt/d/function/file.md instead of /mnt/d/github/SwarmMaker/file.md).
-// This function replaces any markdown link target whose basename matches a known
-// source file but whose full path is wrong.
+// repairCitationPaths fixes near-miss citation path hallucinations and malformed
+// markdown link syntax in generated files. Two repair passes:
+// 1. Fix malformed markdown: ]) -> ), doubled brackets, etc.
+// 2. Fix wrong paths: basename match against known source files.
 func repairCitationPaths(filePath string, knownPaths []string) (int, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return 0, err
 	}
+
+	// Pass 1: fix malformed markdown link syntax.
+	// Common LLM error: extra ] inside link target, e.g., [text](path.txt])
+	// The regex matches link targets containing ] before the closing )
+	malformedRe := regexp.MustCompile(`\]\(([^)]*)\]\)`)
+	text := malformedRe.ReplaceAllString(string(content), "]($1)")
+	content = []byte(text)
 
 	// Build a map: basename -> correct full path
 	byBasename := make(map[string]string, len(knownPaths))
