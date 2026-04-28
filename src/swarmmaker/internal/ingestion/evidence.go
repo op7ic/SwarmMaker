@@ -46,6 +46,7 @@ const (
 	EvidenceCategoryImplementationDecision    EvidenceCategory = "implementation_decision"
 	EvidenceCategorySandboxFallback           EvidenceCategory = "sandbox_fallback"
 	EvidenceCategoryInputQualityGate         EvidenceCategory = "input_quality_gate"
+	EvidenceCategoryReferenceData            EvidenceCategory = "reference_data"
 )
 
 // EvidenceEntry records an ingestion or summary event.

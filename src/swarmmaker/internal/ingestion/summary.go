@@ -14,6 +14,7 @@ package ingestion
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -43,6 +44,28 @@ func buildSummary(ctx *Context) (string, []EvidenceEntry) {
 		write(line)
 	}
 	write("\n")
+
+	// Reference data summary: describe lookup tables without embedding content.
+	// The LLM needs to know these files exist and what they contain, but not
+	// read thousands of hash values or keyword entries.
+	if len(ctx.ReferenceFiles) > 0 {
+		write("## Reference Data Files\n\n")
+		// Group by parent directory for a clean summary
+		dirCounts := make(map[string]int)
+		dirLines := make(map[string]int)
+		dirSize := make(map[string]int64)
+		for _, rf := range ctx.ReferenceFiles {
+			dir := filepath.Dir(rf.RelPath)
+			dirCounts[dir]++
+			dirLines[dir] += rf.LineCount
+			dirSize[dir] += rf.Size
+		}
+		for dir, count := range dirCounts {
+			write(fmt.Sprintf("- **%s/**: %d files (%d lines, %d bytes) containing lookup data (hashes, keywords, or reference values). Content excluded from prompt; files available at source paths for tool integration.\n",
+				dir, count, dirLines[dir], dirSize[dir]))
+		}
+		write(fmt.Sprintf("\nTotal reference data: %d files excluded from prompt to preserve token budget for documentation and source code.\n\n", len(ctx.ReferenceFiles)))
+	}
 
 	write("## File Contents\n\n")
 

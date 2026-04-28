@@ -47,16 +47,30 @@ type DetectedTool struct {
 	Purpose  string // inferred from filename/path
 }
 
+// ReferenceFile represents a lookup table / reference data file that was
+// detected during ingestion. Its content is NOT embedded in the prompt summary
+// because it contains raw data (hashes, keywords, one-value-per-line lists)
+// rather than prose documentation or source code. A summary line is included
+// in the prompt instead.
+type ReferenceFile struct {
+	RelPath   string
+	AbsPath   string
+	Size      int64
+	FileType  string
+	LineCount int
+}
+
 // Context holds all ingested unstructured data from the input folder.
 type Context struct {
-	RootPath      string          // absolute path to the input folder
-	Files         []FileEntry     // all ingested files (text-readable)
-	BinaryFiles   []FileEntry     // non-text files (images, PDFs, etc.) -- noted but not read
-	DetectedTools []DetectedTool  // source code files detected as tools
-	Evidence      []EvidenceEntry // ingest and summary evidence records
-	FileCount     int             // total number of readable files
-	TotalBytes    int64           // total bytes read
-	Summary       string          // concatenated summary of all content for LLM input
+	RootPath       string          // absolute path to the input folder
+	Files          []FileEntry     // all ingested files (text-readable, non-reference)
+	BinaryFiles    []FileEntry     // non-text files (images, PDFs, etc.) -- noted but not read
+	ReferenceFiles []ReferenceFile // lookup tables, hash lists, keyword files -- recorded but not embedded
+	DetectedTools  []DetectedTool  // source code files detected as tools
+	Evidence       []EvidenceEntry // ingest and summary evidence records
+	FileCount      int             // total number of readable files (excluding reference data)
+	TotalBytes     int64           // total bytes read (excluding reference data)
+	Summary        string          // concatenated summary of all content for LLM input
 }
 
 // ReadFolder reads all readable files from a directory tree and builds a
@@ -235,10 +249,35 @@ func ReadFolder(rootPath string) (*Context, error) {
 			return nil
 		}
 
+		contentStr := string(content)
+
+		// Classify reference data: files that are lookup tables (hashes, keywords,
+		// one-value-per-line lists) get recorded as evidence but their content is
+		// NOT embedded in the prompt summary. Only a summary line is included.
+		if isReferenceData(contentStr, fileType, relPath) {
+			ctx.ReferenceFiles = append(ctx.ReferenceFiles, ReferenceFile{
+				RelPath:   relPath,
+				AbsPath:   path,
+				Size:      size,
+				FileType:  fileType,
+				LineCount: strings.Count(contentStr, "\n"),
+			})
+			ctx.Evidence = append(ctx.Evidence, EvidenceEntry{
+				Phase:    EvidencePhaseIngestion,
+				Category: EvidenceCategoryReferenceData,
+				RelPath:  relPath,
+				AbsPath:  path,
+				FileType: fileType,
+				Size:     size,
+				Detail:   fmt.Sprintf("classified as reference data (lookup table); content excluded from prompt summary, recorded as %d lines", strings.Count(contentStr, "\n")),
+			})
+			return nil
+		}
+
 		ctx.Files = append(ctx.Files, FileEntry{
 			RelPath:  relPath,
 			AbsPath:  path,
-			Content:  string(content),
+			Content:  contentStr,
 			Size:     size,
 			FileType: fileType,
 		})
@@ -315,4 +354,60 @@ func recordSymlinkEvidence(ctx *Context, path, relPath string) {
 	}
 
 	ctx.Evidence = append(ctx.Evidence, entry)
+}
+
+// isReferenceData detects files that are lookup tables rather than prose
+// documentation or source code. These include: SHA256 hash lists, keyword
+// files (one word per line), CSV-like data dumps, and other structured data
+// that an LLM cannot meaningfully decompose into agent skills.
+//
+// Heuristic: if >80% of non-empty lines are "simple" (no spaces, or single
+// short tokens, or hex strings), the file is reference data.
+func isReferenceData(content, fileType, relPath string) bool {
+	// Only classify text and data files. Code and markdown are never reference data.
+	if fileType == "code" || fileType == "markdown" {
+		return false
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) < 5 {
+		return false // too few lines to classify
+	}
+
+	nonEmpty := 0
+	simple := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		nonEmpty++
+		// A "simple" line is one that looks like a lookup value:
+		// - no spaces (single token: hash, keyword, filename)
+		// - or a single comma-separated row of short values
+		// - or a hex string (SHA256, MD5)
+		if !strings.Contains(trimmed, " ") || isHexLine(trimmed) || len(trimmed) < 80 && strings.Count(trimmed, ",") > 2 {
+			simple++
+		}
+	}
+
+	if nonEmpty == 0 {
+		return false
+	}
+
+	return float64(simple)/float64(nonEmpty) > 0.80
+}
+
+// isHexLine returns true if the line looks like a hex hash (SHA256, MD5, etc.)
+func isHexLine(s string) bool {
+	s = strings.TrimSpace(s)
+	if len(s) < 32 || len(s) > 128 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

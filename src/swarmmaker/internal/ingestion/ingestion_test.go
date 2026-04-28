@@ -269,3 +269,43 @@ func TestPromptInjectionDoesNotModifyContent(t *testing.T) {
 		t.Error("file content was modified during injection scan; should be left intact")
 	}
 }
+
+func TestIsReferenceDataDetectsHashFiles(t *testing.T) {
+	// SHA256 hash list (one per line)
+	content := strings.Repeat("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n", 20)
+	if !isReferenceData(content, "text", "hashset/tools.txt") {
+		t.Fatal("expected hash file to be classified as reference data")
+	}
+}
+
+func TestIsReferenceDataDetectsKeywordFiles(t *testing.T) {
+	// One keyword per line
+	content := "mimikatz\npsexec\nrundll32\ncertutil\nbitsadmin\ncmd.exe\npowershell\nwscript\ncscript\nnet.exe\nnetsh\nschtasks\n"
+	if !isReferenceData(content, "text", "keywords/tools.txt") {
+		t.Fatal("expected keyword file to be classified as reference data")
+	}
+}
+
+func TestIsReferenceDataKeepsDocumentation(t *testing.T) {
+	// Prose documentation with sentences
+	content := "# Overview\n\nThis tool performs threat hunting against the Cisco AMP API.\nIt supports multiple detection methods including hash lookups.\n\n## Usage\n\nRun the script with your config file.\nResults are saved to CSV.\n"
+	if isReferenceData(content, "markdown", "README.md") {
+		t.Fatal("expected documentation to NOT be classified as reference data")
+	}
+}
+
+func TestIsReferenceDataKeepsCode(t *testing.T) {
+	// Python source code
+	content := "import requests\n\ndef get_events(client, event_type):\n    response = client.get(f'/events/{event_type}')\n    return response.json()\n"
+	if isReferenceData(content, "code", "api/events.py") {
+		t.Fatal("expected code to NOT be classified as reference data")
+	}
+}
+
+func TestIsReferenceDataKeepsShortFiles(t *testing.T) {
+	// Too few lines to classify
+	content := "hash1\nhash2\nhash3\n"
+	if isReferenceData(content, "text", "short.txt") {
+		t.Fatal("expected short file to NOT be classified as reference data")
+	}
+}
