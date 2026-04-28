@@ -23,7 +23,7 @@ graph TD
     PARITY --> RENDER["Render Output"]
 ```
 
-The quality gates run in two tiers: a zero-cost sanity check rejects empty directories, then a single LLM pre-flight call (~$0.01) judges whether the source material can produce at least one working skill. Generation runs in two phases -- foundational files first (context.md, tasks.md), then dependent files with a summary of Phase A injected into their prompts. Validation runs programmatic checks, depth-adaptive pre-screening, adversarial LLM review, and up to 3 targeted revision rounds with regression detection and citation path repair.
+The quality gates run in two tiers: a zero-cost sanity check rejects empty directories, then a single LLM pre-flight call (~$0.01) judges whether the source material can produce at least one working skill. Generation runs in two phases: foundational files first (context.md, tasks.md), then dependent files with a summary of Phase A injected into their prompts. Validation runs programmatic checks, depth-adaptive pre-screening, adversarial LLM review, and up to 3 targeted revision rounds with regression detection and citation path repair.
 
 ## Agent Decomposition (OODA)
 
@@ -41,7 +41,7 @@ Each generated skill includes numbered process steps (typically 6-12) with decis
 
 ## Validation Pipeline
 
-Every generated ledger passes through six validation layers. No layer can be skipped. The programmatic layer has veto power over the LLM reviewer -- concrete pre-screen findings block approval even if the adversarial reviewer says APPROVE. Advisory findings (anti-pattern checks like excessive ALL-CAPS or missing coordination protocol sections) inform the reviewer without blocking the build.
+Every generated ledger passes through six validation layers. No layer can be skipped. The programmatic layer has veto power over the LLM reviewer: concrete pre-screen findings block approval even if the adversarial reviewer says APPROVE. Advisory findings (anti-pattern checks like excessive ALL-CAPS or missing coordination protocol sections) inform the reviewer without blocking the build.
 
 ```mermaid
 graph TD
@@ -60,7 +60,7 @@ The validation report includes a Cost Estimate (total LLM calls, estimated token
 
 ## Core Definition
 
-An agent runs tools in a loop to achieve a goal. Most production systems are **workflows** (predefined code paths) with one or two genuinely **agentic** loops embedded -- and that's usually the right architecture.
+An agent runs tools in a loop to achieve a goal. Most production systems are **workflows** (predefined code paths) with one or two genuinely **agentic** loops embedded, and that's usually the right architecture.
 
 Agent = LLM + Planning + Memory + Tool use, with reflection as the loop primitive. Ablating any one of observation, reflection, or planning collapses long-horizon coherence (Park et al., UIST 2023).
 
@@ -68,7 +68,7 @@ Agent = LLM + Planning + Memory + Tool use, with reflection as the loop primitiv
 
 Three problems dictate every design decision:
 
-**Lost in the middle.** Performance is highest when information sits at the start or end of context, U-shaped degradation in the middle. SwarmMaker addresses this with constraint re-foregrounding -- critical rules are restated after source material, right before the LLM generates.
+**Lost in the middle.** Performance is highest when information sits at the start or end of context, U-shaped degradation in the middle. SwarmMaker addresses this with constraint re-foregrounding: critical rules are restated after source material, right before the LLM generates.
 
 **Context rot.** All models degrade before their stated context limit. Effective reliable capacity is roughly 60-70% of the window. SwarmMaker sets TokenBudget to 70% of the raw window.
 
@@ -96,7 +96,7 @@ A Skill is a directory with a required `SKILL.md` file containing YAML frontmatt
 | Instructions | When skill activates | <5,000 tokens |
 | Resources | On demand (references/) | Unlimited |
 
-The `description` is the routing mechanism. If a skill doesn't trigger, fix the description first. Descriptions should be "pushy" -- include explicit trigger and non-trigger conditions.
+The `description` is the routing mechanism. If a skill doesn't trigger, fix the description first. Descriptions should be "pushy" and include explicit trigger and non-trigger conditions.
 
 SwarmMaker generates SKILL.md files in `.agents/skills/` (cross-platform standard) plus platform-specific trees (`.claude/`, `.codex/`, `.gemini/`).
 

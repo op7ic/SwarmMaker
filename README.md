@@ -35,13 +35,13 @@ graph LR
 
 The pipeline starts by walking the input folder and recording evidence for every file decision (read, skipped as binary, hidden, oversized, noise directory, symlink, or unreadable). It then scans PATH for installed LLM CLIs and probes their capabilities and versions. The routing module assigns generator, critic, and renderer roles based on user flags and available providers, logging any fallback (e.g., same-model critique when only one provider is installed).
 
-Seven versioned JSON artifacts are emitted to `.tasks/ir/` -- product definition, source IR, provider capabilities, routing decision, output tree spec, tool synthesis request, and prompt IR with redacted source material. These form the auditable intermediate representation.
+Seven versioned JSON artifacts are emitted to `.tasks/ir/`. product definition, source IR, provider capabilities, routing decision, output tree spec, tool synthesis request, and prompt IR with redacted source material. These form the auditable intermediate representation.
 
 Before generation, a pre-flight LLM call (~$0.01) evaluates whether the source material is rich enough to decompose into skills. If insufficient, the run exits with a specific explanation of what's missing, saving 9+ expensive generation calls.
 
 Generation runs in two phases. Phase A produces the foundational files (context.md, tasks.md) first. Phase B then generates the remaining 7 files with a summary of Phase A output injected into their prompts, ensuring cross-file consistency from the start rather than catching contradictions only in review. Tasks within each phase run concurrently (or serially for same-provider) with round-robin assignment across available LLMs.
 
-After generation, the validation pipeline runs (see below). After each revision round, a citation path repair step fixes near-miss path hallucinations where the LLM mangled a directory path but kept the filename correct (e.g., `/mnt/d/function/` instead of `/mnt/d/github/SwarmMaker/`). On success, the renderer compiles the validated ledger into platform-specific output trees plus the cross-platform `.agents/skills/` standard path.
+After generation, the validation pipeline runs (see below). After each revision round, a citation path repair step fixes near-miss path hallucinations where the LLM mangled a directory path but kept the filename correct. On success, the renderer compiles the validated ledger into platform-specific output trees plus the cross-platform `.agents/skills/` standard path.
 
 ```mermaid
 graph TD
@@ -228,13 +228,13 @@ swarm-me --input ./notes --model claude --output-swarm codex --prompt-pack ./pac
 
 Every generated ledger passes through six validation layers before output is written. No layer can be skipped.
 
-Source material is scanned for prompt injection patterns (e.g., "ignore previous instructions") during ingestion. Detected patterns are recorded as evidence events and flagged in the validation report for human review -- content is never silently modified.
+Source material is scanned for prompt injection patterns (e.g., "ignore previous instructions") during ingestion. Detected patterns are recorded as evidence events and flagged in the validation report for human review; content is never silently modified.
 
 The pipeline starts with zero-LLM-cost programmatic checks: file existence, minimum sizes, markdown link integrity, template leak detection (16 known patterns that LLMs might copy from prompt instructions), and meta-commentary filtering (rejecting outputs that describe what they did instead of producing the artifact).
 
 Next, a pre-screen gate runs depth-adaptive heuristics. Shallow sources get lenient citation checks. Deep sources (like our alert triage example with 33 sections) require higher citation density using a sub-linear formula, dimension coverage verification, and amplification ratio checks. Fabrication patterns and boilerplate injection are checked regardless of depth. The pre-screen produces per-file flags: concrete flags (specific problems like "low citation density: 24 citations in 20K chars, expect 25") block the build, while advisory flags (like "missing Process section") inform the reviewer without blocking.
 
-If concrete flags exist, they are forwarded to the adversarial LLM review -- a separate call to the critic provider that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings. Critically, concrete pre-screen findings block approval even if the reviewer says APPROVE -- the programmatic layer has veto power over the LLM.
+If concrete flags exist, they are forwarded to the adversarial LLM review, a separate call to the critic provider that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings. Critically, concrete pre-screen findings block approval even if the reviewer says APPROVE because the programmatic layer has veto power over the LLM.
 
 When the verdict is REVISE, only flagged files are regenerated in targeted revision rounds. After each round, a post-revision re-screen checks whether the revision improved things. If the flag count decreased, another round runs (up to 3 total). If the count didn't decrease (regression), the loop stops immediately to avoid wasting LLM calls on revisions that aren't helping.
 
