@@ -1087,3 +1087,44 @@ func writePromptPack(t *testing.T, payload string) string {
 	}
 	return path
 }
+
+func TestSkillContractHasExecutableCommandRules(t *testing.T) {
+	ir := validIR()
+	prompt, err := CompileDraftPrompt(DraftSkills, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, "EXECUTABLE COMMAND RULES") {
+		t.Fatal("skills prompt missing EXECUTABLE COMMAND RULES section")
+	}
+	if !strings.Contains(prompt, "EXACT invocation command") {
+		t.Fatal("skills prompt missing exact invocation requirement")
+	}
+}
+
+func TestSkillContractHasApplicableStandards(t *testing.T) {
+	ir := validIR()
+	prompt, err := CompileDraftPrompt(DraftSkills, ir)
+	if err != nil {
+		t.Fatalf("CompileDraftPrompt: %v", err)
+	}
+	if !strings.Contains(prompt, "Applicable Standards") {
+		t.Fatal("skills prompt missing Applicable Standards section")
+	}
+	if !strings.Contains(prompt, "MITRE ATT&CK") {
+		t.Fatal("skills prompt missing MITRE ATT&CK example")
+	}
+}
+
+func TestNonSkillPromptsLackExecutableRules(t *testing.T) {
+	ir := validIR()
+	for _, kind := range []DraftKind{DraftContext, DraftTasks, DraftPromptProduct} {
+		prompt, err := CompileDraftPrompt(kind, ir)
+		if err != nil {
+			t.Fatalf("CompileDraftPrompt(%s): %v", kind, err)
+		}
+		if strings.Contains(prompt, "EXECUTABLE COMMAND RULES") {
+			t.Fatalf("%s prompt should not contain EXECUTABLE COMMAND RULES", kind)
+		}
+	}
+}
