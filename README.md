@@ -4,7 +4,7 @@ Compile unstructured knowledge into validated, installable AI agent swarms.
 
 ## Problem Statement
 
-Translating loose human knowledge (notes, API docs, specs, scratch files) into structured AI agent configurations is manual, error-prone, and non-reproducible. The resulting agent scaffolds drift from source material, contain unstated assumptions, break when switching model providers, and have no evidence trail proving correctness.
+Translating loose knowledge (notes, API docs, specs, scratch files) into structured AI agent configurations is manual, error-prone, and non-reproducible. The resulting agent scaffolds drift from source material, contain unstated assumptions, break when switching model providers, and have no evidence trail proving correctness. 
 
 SwarmMaker automates this as a **two-stage compiler**:
 
