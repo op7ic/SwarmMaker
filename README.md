@@ -149,6 +149,36 @@ swarm-maker validate --bundle ./SKILL --target claude
 
 SwarmMaker does not replace runtime agent frameworks. It produces the **knowledge artifacts** those frameworks consume.
 
+## Use Cases
+
+### Security operations and threat hunting
+
+A security team has runbooks, hash databases, keyword files, API clients, and an OpenAPI spec for their endpoint protection platform. They need agents that can execute threat hunting workflows: hash lookups, IOC sweeps, credential theft detection, lateral movement analysis. SwarmMaker compiles these into validated skills with exact CLI commands from the source, MITRE ATT&CK mappings, and MCP tool definitions. The generated skills reference the actual Python scripts and hash files rather than inventing generic commands.
+
+### Onboarding domain knowledge
+
+A team has accumulated institutional knowledge across dozens of documents (architecture specs, API docs, operational procedures, incident response playbooks). New team members take weeks to absorb it. SwarmMaker compiles the documentation into structured skill files that an AI assistant can load immediately. Every skill traces back to source material, so the assistant's answers are verifiable, not hallucinated.
+
+### Multi-provider deployment
+
+An organization uses Claude for engineering teams, Codex for data teams, and Gemini for operations. Each platform expects different skill formats. Manually maintaining three copies of the same knowledge is error-prone and drifts over time. SwarmMaker compiles once and renders to all three platforms from the same intermediate representation. Render parity validation catches any cross-platform drift.
+
+### API-first skill generation
+
+A team maintains OpenAPI specs for their internal services. SwarmMaker detects these automatically during ingestion and parses them into structured endpoint summaries (methods, parameters, schemas). The LLM receives accurate API context instead of raw YAML, producing skills with correct endpoint references and parameter types. Each skill gets an MCP tool definition with a full JSON Schema, making it immediately consumable by MCP-compatible tool servers.
+
+### Iterative skill refinement
+
+After generating a full skill bundle (~25 min), a domain expert reviews the output and identifies one skill that needs improvement. Instead of re-running the entire pipeline, they use `regen` to regenerate that single skill (~2 min). The command atomically updates the skill file, MCP tool definition, platform-specific trees, and the source ledger. They validate the result against a live LLM to confirm discoverability and triggerability.
+
+### Compliance and audit trails
+
+Regulated industries (finance, healthcare, government) need provenance for automated decisions. SwarmMaker provides: per-claim citations tracing every agent instruction to a source document, 7 IR artifacts with checksums, an evidence manifest recording every ingestion decision, and a validation report showing what was checked and what passed. When an auditor asks "why does this agent follow these rules?", the citation chain provides the answer in seconds.
+
+### Custom agent platforms
+
+A team uses an internal agent framework with its own skill format (different from Claude/Codex/Gemini). They define a YAML spec describing the path template, frontmatter fields, and sections their platform expects. SwarmMaker renders to their custom format alongside the standard platforms, without modifying the generation pipeline.
+
 ## Installation
 
 ### From source
