@@ -151,33 +151,163 @@ SwarmMaker does not replace runtime agent frameworks. It produces the **knowledg
 
 ## Use Cases
 
+### Turn a codebase into agent skills
+
+Point SwarmMaker at a repository and it generates skills that know how to use the tools in that codebase. The pipeline detects source files, infers languages and entry points, and produces skills with exact invocation commands.
+
+**Example:** A Python threat hunting toolkit with `hash2processarg.py`, `multikeyword_search.py`, and an AMP API client:
+
+```bash
+swarm-maker --input ./amp-toolkit --model codex --output-swarm claude -o ./SKILL
+```
+
+Generated skill `hash-ioc-process-arguments` includes:
+```markdown
+### Process
+1. Validate every supplied line as SHA256 using the pattern ^[a-fA-F0-9]{64}$.
+   Source: [amp_client/utils/validators.py](...)
+2. Run `python3 hash2processarg.py -c config.txt hashset/windows-binaries/cmd.exe.txt`
+   for single-source mode or `python3 hash2processarg.py -c config.txt hashes.txt --csv output.csv`
+   for batch mode. Source: [readme.md](...)
+3. CHECKPOINT: capture every returned execution record with both the process SHA256
+   and child SHA256. If no child SHA256 is returned, store UNKNOWN explicitly.
+```
+
+The agent can now execute the actual tool with the actual flags from the actual source. No invented commands.
+
 ### Security operations and threat hunting
 
-A security team has runbooks, hash databases, keyword files, API clients, and an OpenAPI spec for their endpoint protection platform. They need agents that can execute threat hunting workflows: hash lookups, IOC sweeps, credential theft detection, lateral movement analysis. SwarmMaker compiles these into validated skills with exact CLI commands from the source, MITRE ATT&CK mappings, and MCP tool definitions. The generated skills reference the actual Python scripts and hash files rather than inventing generic commands.
+A security team has runbooks, hash databases, keyword files, API clients, and an OpenAPI spec for their endpoint protection platform. SwarmMaker compiles these into validated skills covering the full hunting workflow.
+
+**Example:** From a folder containing AMP client code, SHA256 hash sets, IOC keyword files, and an API spec, SwarmMaker generated 10 skills:
+
+| Skill | What the agent can do | MCP Params |
+|-------|----------------------|------------|
+| `credential-theft-hunt` | Combine tool hashes + LSASS keywords to detect credential dumping | 4 |
+| `keyword-ioc-sweep` | Multi-type IOC search (hash, IP, string) with type classification | 6 |
+| `lateral-movement-detection` | Detect lateral movement via network + process correlation | 6 |
+| `network-connection-hunting` | Hunt malicious connections by hash or URL pattern | 6 |
+| `persistence-mechanism-hunt` | Detect registry, service, and scheduled task persistence | 3 |
+| `timeline-analysis` | Reconstruct per-endpoint event timelines | 5 |
+| `hash-ioc-process-arguments` | Map SHA256 hashes to process execution records with CLI args | 3 |
+| `event-extraction-by-type` | Extract specific AMP event types for analysis | 4 |
+| `statistics-anomaly-reporting` | Statistical anomaly detection across endpoint fleet | 3 |
+| `vulnerability-triage` | Triage CVE exposure across monitored endpoints | 3 |
+
+Each skill includes exact CLI commands from the source (`python3 hash2processarg.py -c config.txt hashset/hacking-tools/mimikatz.txt --csv mimikatz_hits.csv`), MITRE ATT&CK technique mappings, and an MCP tool definition with typed input parameters.
+
+### Compile API documentation into tool-using agents
+
+Feed SwarmMaker your API documentation (REST endpoints, SDKs, OpenAPI specs) and it produces agents that know how to call your APIs with correct parameters, authentication, and error handling.
+
+**Example:** An internal platform with a REST API, Python SDK, and Swagger spec:
+
+```bash
+# API docs + SDK source + OpenAPI spec in one folder
+swarm-maker --input ./platform-docs --model claude --output-swarm codex -o ./SKILL
+```
+
+SwarmMaker auto-detects the OpenAPI spec and parses it into structured endpoints:
+```markdown
+### GET /v1/computers
+List monitored endpoints
+**Parameters**: `limit` (query) [integer], `hostname` (query) [string]
+
+### GET /v1/events
+Get security events
+**Parameters**: `start_date` (query) [string] *required*, `event_type` (query) [integer]
+
+### POST /v1/file_lists/application_blocking
+Add SHA256 to blocking list
+**Parameters**: `sha256` (query) [string] *required*
+```
+
+The generated skills reference these endpoints with correct parameter types instead of hallucinating API contracts. The MCP tool definition includes a JSON Schema matching the API parameters, so MCP-compatible tool servers can call the API directly.
 
 ### Onboarding domain knowledge
 
-A team has accumulated institutional knowledge across dozens of documents (architecture specs, API docs, operational procedures, incident response playbooks). New team members take weeks to absorb it. SwarmMaker compiles the documentation into structured skill files that an AI assistant can load immediately. Every skill traces back to source material, so the assistant's answers are verifiable, not hallucinated.
+A team has accumulated institutional knowledge across dozens of documents. New team members take weeks to absorb it. SwarmMaker compiles the documentation into structured skill files that an AI assistant can load immediately.
+
+**Example:** An SRE team with runbooks, architecture diagrams, incident response procedures, and monitoring tool configs:
+
+```bash
+swarm-maker --input ./sre-knowledge --model codex --output-swarm all -o ./SKILL
+```
+
+The output installs into Claude, Codex, and Gemini simultaneously. A new engineer asks Claude "how do I investigate a disk pressure alert on the payment cluster?" and the agent responds with the exact procedure from the team's runbook, citing the source document, not generating a generic answer.
 
 ### Multi-provider deployment
 
-An organization uses Claude for engineering teams, Codex for data teams, and Gemini for operations. Each platform expects different skill formats. Manually maintaining three copies of the same knowledge is error-prone and drifts over time. SwarmMaker compiles once and renders to all three platforms from the same intermediate representation. Render parity validation catches any cross-platform drift.
+An organization uses Claude for engineering, Codex for data teams, and Gemini for operations. SwarmMaker compiles once and renders to all three from the same intermediate representation.
 
-### API-first skill generation
+```bash
+# One compilation, three platform outputs
+swarm-maker --input ./docs --model codex --output-swarm all -o ./SKILL
 
-A team maintains OpenAPI specs for their internal services. SwarmMaker detects these automatically during ingestion and parses them into structured endpoint summaries (methods, parameters, schemas). The LLM receives accurate API context instead of raw YAML, producing skills with correct endpoint references and parameter types. Each skill gets an MCP tool definition with a full JSON Schema, making it immediately consumable by MCP-compatible tool servers.
+# Output:
+# ./SKILL/.claude/skills/alert-triage/SKILL.md
+# ./SKILL/.codex/instructions/alert-triage.md
+# ./SKILL/.gemini/playbooks/alert-triage.md
+# ./SKILL/.agents/skills/alert-triage/SKILL.md      (cross-platform)
+# ./SKILL/.agents/skills/alert-triage/mcp_tool.json  (MCP definition)
+```
+
+Render parity validation ensures all three platform trees contain identical skills and metadata. If a skill exists in `.claude/` but is missing from `.codex/`, the pipeline fails.
 
 ### Iterative skill refinement
 
-After generating a full skill bundle (~25 min), a domain expert reviews the output and identifies one skill that needs improvement. Instead of re-running the entire pipeline, they use `regen` to regenerate that single skill (~2 min). The command atomically updates the skill file, MCP tool definition, platform-specific trees, and the source ledger. They validate the result against a live LLM to confirm discoverability and triggerability.
+After generating a full bundle (~25 min), a domain expert reviews the output and identifies one skill that needs work. Instead of re-running the full pipeline, they target that single skill:
+
+```bash
+# Regenerate one skill (2 min instead of 25 min)
+swarm-maker regen --skill credential-theft-hunt --input ./docs --model codex -o ./SKILL
+
+# Verify it triggers correctly
+swarm-maker validate --bundle ./SKILL --target claude
+
+# Result: 10/10 skills validated
+```
+
+The `regen` command atomically updates the SKILL.md, mcp_tool.json, all platform-specific trees, references, and the source ledger. Sibling skills are untouched.
 
 ### Compliance and audit trails
 
-Regulated industries (finance, healthcare, government) need provenance for automated decisions. SwarmMaker provides: per-claim citations tracing every agent instruction to a source document, 7 IR artifacts with checksums, an evidence manifest recording every ingestion decision, and a validation report showing what was checked and what passed. When an auditor asks "why does this agent follow these rules?", the citation chain provides the answer in seconds.
+Regulated industries need provenance for automated decisions. SwarmMaker provides a complete evidence chain:
+
+```
+Evidence chain for any agent instruction:
+  Skill process step → Source: citation → Original document
+  │
+  ├── .tasks/evidence.json       (every ingestion decision logged)
+  ├── .tasks/ir/manifest.json    (SHA-256 digests for all IR artifacts)
+  ├── .tasks/validation-report.md (what was checked, what passed/failed)
+  └── Per-task cost breakdown     (every LLM call with tokens and USD)
+```
+
+When an auditor asks "why does this agent classify alerts using P0-P3 rules?", the answer traces through: skill process step 3 → `Source: [ops-runbook.md section 2.1]` → the actual text in the original document.
 
 ### Custom agent platforms
 
-A team uses an internal agent framework with its own skill format (different from Claude/Codex/Gemini). They define a YAML spec describing the path template, frontmatter fields, and sections their platform expects. SwarmMaker renders to their custom format alongside the standard platforms, without modifying the generation pipeline.
+A team uses an internal framework with its own skill format. They define a YAML spec:
+
+```yaml
+platform: internal-orchestrator
+skill_path: "workflows/{slug}/config.md"
+frontmatter: true
+frontmatter_fields: [name, description, version]
+sections: [summary, process, constraints]
+```
+
+```bash
+swarm-maker --input ./docs --model codex --output-swarm claude,custom:internal.yaml -o ./SKILL
+
+# Output includes standard Claude tree AND custom platform:
+# ./SKILL/workflows/alert-triage/config.md
+# ./SKILL/workflows/hash-hunt/config.md
+# ...
+```
+
+No code changes. No rebuild. The renderer reads the spec and produces the custom output tree alongside standard platforms.
 
 ## Installation
 
