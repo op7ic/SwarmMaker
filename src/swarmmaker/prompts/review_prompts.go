@@ -84,7 +84,7 @@ func AdversarialReviewPromptWithPack(ir PromptIR, pack Pack, allFiles []PromptFi
 	data := newPromptTemplateData(ir)
 	data.FlaggedFilesList = flaggedPathList(allFiles, flaggedFiles)
 	data.AllFilesList = snapshotPathList(allFiles)
-	data.AllFilesContent = promptFileBlocks(allFiles)
+	data.AllFilesContent = promptFileBlocksSmart(allFiles, flaggedFiles)
 	data.PreScreenFindingsList = findingsList(preScreenFindings)
 	rendered, err := pack.Review.render(data)
 	if err != nil {
@@ -124,6 +124,117 @@ const (
 	maxTotalFileChars = 30000
 )
 
+func promptFileBlocksSmart(files []PromptFileSnapshot, flaggedPaths []string) string {
+	flaggedSet := make(map[string]struct{}, len(flaggedPaths))
+	for _, p := range flaggedPaths {
+		flaggedSet[p] = struct{}{}
+	}
+
+	var b strings.Builder
+	totalChars := 0
+
+	// First pass: flagged files get full content (priority)
+	for _, file := range files {
+		if _, isFlagged := flaggedSet[file.RelPath]; !isFlagged {
+			continue
+		}
+		if strings.TrimSpace(file.RelPath) == "" || strings.TrimSpace(file.AbsPath) == "" {
+			continue
+		}
+		block := buildFullFileBlock(file, maxPerFileChars)
+		if totalChars+len(block) > maxTotalFileChars && totalChars > 0 {
+			block = buildSummaryBlock(file)
+		}
+		totalChars += len(block)
+		b.WriteString(block)
+	}
+
+	// Second pass: unflagged files get summaries
+	for _, file := range files {
+		if _, isFlagged := flaggedSet[file.RelPath]; isFlagged {
+			continue
+		}
+		if strings.TrimSpace(file.RelPath) == "" || strings.TrimSpace(file.AbsPath) == "" {
+			continue
+		}
+		block := buildSummaryBlock(file)
+		if totalChars+len(block) > maxTotalFileChars {
+			break
+		}
+		totalChars += len(block)
+		b.WriteString(block)
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func buildFullFileBlock(file PromptFileSnapshot, maxChars int) string {
+	var b strings.Builder
+	b.WriteString("### File Snapshot: ")
+	b.WriteString(file.RelPath)
+	b.WriteString(" (FLAGGED - full content)\n")
+	b.WriteString("Absolute path: ")
+	b.WriteString(file.AbsPath)
+	b.WriteString("\n```md\n")
+	content := file.Content
+	if len(content) > maxChars {
+		content = content[:maxChars]
+		content += fmt.Sprintf("\n[TRUNCATED -- showing first %d of %d chars]", maxChars, len(file.Content))
+	}
+	b.WriteString(content)
+	if !strings.HasSuffix(content, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("```\n\n")
+	return b.String()
+}
+
+func buildSummaryBlock(file PromptFileSnapshot) string {
+	var b strings.Builder
+	b.WriteString("### File Snapshot: ")
+	b.WriteString(file.RelPath)
+	b.WriteString(" (summary)\n")
+	b.WriteString("Absolute path: ")
+	b.WriteString(file.AbsPath)
+	b.WriteString("\n")
+
+	// Preview (first 500 chars)
+	preview := file.Content
+	if len(preview) > 500 {
+		preview = preview[:500] + "..."
+	}
+	b.WriteString("Preview:\n```\n")
+	b.WriteString(preview)
+	b.WriteString("\n```\n")
+
+	// Section headings
+	b.WriteString("Sections: ")
+	lines := strings.Split(file.Content, "\n")
+	var headings []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+			headings = append(headings, trimmed)
+		}
+	}
+	if len(headings) > 0 {
+		b.WriteString(strings.Join(headings, " | "))
+	} else {
+		b.WriteString("none detected")
+	}
+	b.WriteString("\n")
+
+	// Citation count
+	citations := strings.Count(file.Content, "Source:")
+	b.WriteString(fmt.Sprintf("Citations: %d\n", citations))
+
+	// Length
+	b.WriteString(fmt.Sprintf("Total length: %d chars\n\n", len(file.Content)))
+	return b.String()
+}
+
+// promptFileBlocks is the legacy function that treats all files equally.
+// Kept for backward compatibility with existing tests.
 func promptFileBlocks(files []PromptFileSnapshot) string {
 	var b strings.Builder
 	totalChars := 0

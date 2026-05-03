@@ -26,7 +26,7 @@ graph LR
 |-------|-----------|-------|--------|--------------|
 | 1. Ingest | 0 | Source folder | Evidence manifest, complexity analysis, OpenAPI parsing | Missing/unreadable files recorded, not hidden; OpenAPI specs parsed into structured endpoints; basic sanity gate rejects empty dirs |
 | 2. IR Emit | 0 | Ingestion output + routing | 7 JSON artifacts under `.tasks/ir/` | Contract validation rejects malformed schemas |
-| 2.5 Pre-flight | 1 | Summary + complexity metrics | SUFFICIENT/INSUFFICIENT verdict | Rejects material too thin for skill decomposition (~$0.01) |
+| 2.5 Pre-flight | 1 | Summary + complexity metrics | SUFFICIENT/INSUFFICIENT verdict + domain analysis (domain, key entities, tool/API detection) | Rejects material too thin for skill decomposition (~$0.01); on success, injects structured domain context into generation prompts |
 | 3. Generate | 9 (two-phase) | Compiled prompts + source | 9 `.tasks/` ledger files | Phase A (context+tasks) then Phase B (7 dependent files with ledger context); per-task retry with backoff |
 | 4. Validate | 1-10 | Generated ledger | Validation report | Multi-round: programmatic → pre-screen → adversarial review → revision (up to 3 rounds) → post-screen |
 | 5. Render | 0 | Validated ledger | Platform trees + MCP tool defs + README + installer | Atomic staged write; MCP tool JSON per skill; parity check across targets; optional custom platform output |
@@ -49,7 +49,7 @@ The pipeline then emits an **Intermediate Representation (IR)**, a set of seven 
 
 Each artifact is validated against its schema contract before being written. A SHA-256 digest is computed per artifact and recorded in a manifest (`ir/manifest.json`) so downstream consumers can verify integrity.
 
-Before generation, a pre-flight LLM call (~$0.01) evaluates whether the source material is rich enough to decompose into skills. If insufficient, the run exits with a specific explanation of what is missing, saving 9+ expensive generation calls.
+Before generation, a pre-flight LLM call (~$0.01) evaluates whether the source material is rich enough to decompose into skills. If insufficient, the run exits with a specific explanation of what is missing, saving 9+ expensive generation calls. On success, the pre-flight returns structured domain analysis (domain description, key entities, procedure/API/tool detection) that is injected into the PromptIR context block for all downstream generation prompts.
 
 Generation runs in two phases. Phase A produces the foundational files (context.md, tasks.md) first. Phase B then generates the remaining 7 files with a summary of Phase A output injected into their prompts, ensuring cross-file consistency from the start rather than catching contradictions only in review. Tasks within each phase run concurrently (or serially for same-provider) with round-robin assignment across available LLMs.
 
@@ -61,9 +61,9 @@ graph TD
     INGEST --> SANITY{"Sanity Check"}
     SANITY -->|empty dir| REJECT["Reject"]
     SANITY -->|ok| IR["IR Emit + Route<br/>7 JSON artifacts,<br/>assign generator/critic roles"]
-    IR --> PREFLIGHT{"Pre-flight<br/>LLM Validation"}
+    IR --> PREFLIGHT{"Pre-flight<br/>LLM Validation +<br/>Domain Analysis"}
     PREFLIGHT -->|insufficient| REJECT
-    PREFLIGHT -->|sufficient| PHASE_A["Phase A: Generate<br/>context.md + tasks.md"]
+    PREFLIGHT -->|"sufficient +<br/>domain context"| PHASE_A["Phase A: Generate<br/>context.md + tasks.md"]
     PHASE_A --> PHASE_B["Phase B: Generate<br/>7 dependent files<br/>with ledger context"]
     PHASE_B --> VALIDATE{"Validate<br/>Programmatic checks<br/>Pre-screen heuristics<br/>Adversarial LLM review"}
     VALIDATE -->|revise| REPAIR["Citation Repair +<br/>Targeted Revision"]
@@ -487,7 +487,7 @@ Next, a pre-screen gate runs depth-adaptive heuristics. Shallow sources get leni
 - **Concrete flags** (e.g., "low citation density: 24 citations in 20K chars, expect 25") are specific, measurable violations. They block the PASS verdict until resolved through revision.
 - **Advisory flags** (e.g., "excessive ALL-CAPS: 22 non-standard uppercase words") are style and quality signals. They are reported in the validation report for human review but do not block the PASS verdict. This prevents the pipeline from failing on cosmetic issues after substantive problems have been fixed.
 
-If concrete flags exist, they are forwarded to the adversarial LLM review, a separate call to the critic provider that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The reviewer returns APPROVE or REVISE with per-file findings. Critically, concrete pre-screen findings block approval even if the reviewer says APPROVE because the programmatic layer has veto power over the LLM.
+If concrete flags exist, they are forwarded to the adversarial LLM review, a separate call to the critic provider that evaluates cross-file consistency, source fidelity, coverage gaps, and UNKNOWN gate enforcement. The review prompt uses smart summarization: flagged files get full content (up to per-file limits) so the reviewer sees actual problems in detail, while unflagged files get structured summaries (headings, citation count, preview) for cross-file consistency checking. The reviewer returns APPROVE or REVISE with per-file findings. Critically, concrete pre-screen findings block approval even if the reviewer says APPROVE because the programmatic layer has veto power over the LLM.
 
 When the verdict is REVISE, only flagged files are regenerated in targeted revision rounds. After each round, a post-revision re-screen checks whether the revision improved things. If the flag count decreased, another round runs (up to 3 total). If the count didn't decrease (regression), the loop stops immediately to avoid wasting LLM calls on revisions that aren't helping.
 

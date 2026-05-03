@@ -41,6 +41,11 @@ type PromptIR struct {
 	ToolLanguages        []string        `json:"tool_languages,omitempty"`
 	DetectedTools        []DetectedTool  `json:"detected_tools,omitempty"`
 	SourceFiles          []SourceFileRef `json:"source_files,omitempty"`
+	// Pre-flight domain analysis (informational, injected as context for generation)
+	DomainDescription  string   `json:"domain_description,omitempty"`
+	DomainEntities     []string `json:"domain_entities,omitempty"`
+	HasExecutableTools bool     `json:"has_executable_tools,omitempty"`
+	HasAPISpecs        bool     `json:"has_api_specs,omitempty"`
 }
 
 // DetectedTool mirrors ingestion.DetectedTool for prompt compilation.
@@ -101,7 +106,8 @@ func (ir PromptIR) contextBlock() string {
 	languages := ir.languageSummary()
 	targets := strings.Join(normalizedOutputFormatNames(ir.TargetFormats), ", ")
 	renderers := strings.Join(normalizedOutputFormatNames(ir.OutputRenderers), ", ")
-	return fmt.Sprintf(`<swarmmaker-ir>
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(`<swarmmaker-ir>
 project_name: %s
 target_output_formats: %s
 generator_provider: %s
@@ -116,9 +122,19 @@ input_file_count: %d
 binary_file_count: %d
 evidence_event_count: %d
 tool_languages: %s
-</swarmmaker-ir>
-
-`, ir.ProjectName, targets, ir.GeneratorProvider, ir.CriticProvider, renderers, ir.EvidenceManifestPath, ir.IRManifestPath, ir.PromptPackName, ir.PromptPackSource, ir.PromptPackDigest, ir.InputFileCount, ir.BinaryFileCount, ir.EvidenceEventCount, languages)
+`, ir.ProjectName, targets, ir.GeneratorProvider, ir.CriticProvider, renderers, ir.EvidenceManifestPath, ir.IRManifestPath, ir.PromptPackName, ir.PromptPackSource, ir.PromptPackDigest, ir.InputFileCount, ir.BinaryFileCount, ir.EvidenceEventCount, languages))
+	if ir.DomainDescription != "" {
+		b.WriteString("domain_context: ")
+		b.WriteString(ir.DomainDescription)
+		b.WriteString("\n")
+	}
+	if len(ir.DomainEntities) > 0 {
+		b.WriteString("key_entities: ")
+		b.WriteString(strings.Join(ir.DomainEntities, ", "))
+		b.WriteString("\n")
+	}
+	b.WriteString("</swarmmaker-ir>\n\n")
+	return b.String()
 }
 
 func (ir PromptIR) languageSummary() string {

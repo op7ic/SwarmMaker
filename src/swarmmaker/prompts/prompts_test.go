@@ -1185,3 +1185,48 @@ func TestCompileSingleSkillPromptNoSiblings(t *testing.T) {
 		t.Fatal("prompt missing target directive")
 	}
 }
+
+func TestPromptFileBlocksSmartPrioritizesFlagged(t *testing.T) {
+	files := []PromptFileSnapshot{
+		{RelPath: ".tasks/context.md", AbsPath: "/tmp/context.md", Content: strings.Repeat("context content\n", 100)},
+		{RelPath: ".tasks/skills.md", AbsPath: "/tmp/skills.md", Content: strings.Repeat("skills content with Source: citation\n", 200)},
+		{RelPath: ".tasks/agents.md", AbsPath: "/tmp/agents.md", Content: strings.Repeat("agents content\n", 100)},
+	}
+	flagged := []string{".tasks/skills.md"}
+
+	result := promptFileBlocksSmart(files, flagged)
+
+	// Flagged file should have "FLAGGED - full content"
+	if !strings.Contains(result, "FLAGGED - full content") {
+		t.Error("flagged file should be marked as full content")
+	}
+	// Unflagged files should have "(summary)"
+	if !strings.Contains(result, ".tasks/context.md (summary)") {
+		t.Error("unflagged file should be marked as summary")
+	}
+	// Skills content should appear in full (or truncated at per-file limit)
+	if !strings.Contains(result, "skills content") {
+		t.Error("flagged file content missing")
+	}
+}
+
+func TestPromptIRContextBlockIncludesDomain(t *testing.T) {
+	ir := validIR()
+	ir.DomainDescription = "endpoint security threat hunting"
+	ir.DomainEntities = []string{"endpoints", "hashes", "events"}
+	block := ir.contextBlock()
+	if !strings.Contains(block, "domain_context: endpoint security threat hunting") {
+		t.Errorf("contextBlock missing domain_context, got:\n%s", block)
+	}
+	if !strings.Contains(block, "key_entities: endpoints, hashes, events") {
+		t.Errorf("contextBlock missing key_entities, got:\n%s", block)
+	}
+}
+
+func TestPromptIRContextBlockOmitsDomainWhenEmpty(t *testing.T) {
+	ir := validIR()
+	block := ir.contextBlock()
+	if strings.Contains(block, "domain_context:") {
+		t.Error("contextBlock should not include domain_context when empty")
+	}
+}

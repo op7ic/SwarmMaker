@@ -817,6 +817,7 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 	// Pre-flight, Phase 3, and post-generation evidence scan are skipped
 	// when incremental regeneration detects unchanged source content.
 	var preFlightResp *executor.Response
+	var preFlightDomain *preFlightAnalysis
 	var generationResults []swarm.Result
 	if !incrementalSkip {
 		// Pre-flight source validation: one short LLM call to judge whether the
@@ -824,9 +825,21 @@ func runSwarmMaker(cmd *cobra.Command, args []string) error {
 		// to potentially save 9+ expensive generation calls ($1-5) on garbage input.
 		bold.Println("[Pre-flight] Validating source material sufficiency...")
 		var preFlightErr error
-		preFlightResp, preFlightErr = runPreFlightValidation(exec, ingested, complexity)
+		preFlightResp, preFlightDomain, preFlightErr = runPreFlightValidation(exec, ingested, complexity)
 		if preFlightErr != nil {
 			return preFlightErr
+		}
+		// Inject domain analysis into PromptIR (informational context)
+		if preFlightDomain != nil {
+			promptIR.DomainDescription = preFlightDomain.Domain
+			promptIR.DomainEntities = preFlightDomain.KeyEntities
+			promptIR.HasExecutableTools = preFlightDomain.HasExecutableTools
+			promptIR.HasAPISpecs = preFlightDomain.HasAPISpecs
+			if verbose {
+				fmt.Printf("  Domain: %s\n", preFlightDomain.Domain)
+				fmt.Printf("  Key entities: %s\n", strings.Join(preFlightDomain.KeyEntities, ", "))
+				fmt.Printf("  Estimated skills: %d\n", preFlightDomain.EstimatedSkills)
+			}
 		}
 		green.Println("  Source material: SUFFICIENT")
 		fmt.Println()
@@ -2089,54 +2102,113 @@ func buildPreFlightPrompt(ingested *ingestion.Context, complexity *ingestion.Sou
 		depth = complexity.Depth
 	}
 
-	return fmt.Sprintf(`You are evaluating whether source material is sufficient to produce a working AI agent skill bundle.
+	return fmt.Sprintf(`You are evaluating source material for AI agent skill generation.
 
 Source material summary:
 - Files: %d (%d bytes)
 - Sections/headings: %d
 - Depth classification: %s
 
-Source content:
+Source content preview:
 %s
 
-Answer with exactly one of:
-SUFFICIENT: The source contains enough domain concepts, requirements, constraints, or data structures to decompose into at least one agent skill with concrete process steps.
-INSUFFICIENT: [specific explanation of what is missing and what the user should add]
+Respond with a JSON block:
+`+"```json"+`
+{
+  "verdict": "SUFFICIENT",
+  "domain": "brief domain description (2-5 words, e.g. 'endpoint security threat hunting')",
+  "key_entities": ["primary", "domain", "objects"],
+  "estimated_skills": 8,
+  "has_procedures": true,
+  "has_api_specs": false,
+  "has_executable_tools": true
+}
+`+"```"+`
 
-Do not explain your reasoning beyond the verdict line.`,
+Rules:
+- verdict: SUFFICIENT if the material has procedures, requirements, or data structures decomposable into agent skills. INSUFFICIENT if it lacks actionable structure.
+- domain: the primary subject area in 2-5 words
+- key_entities: 3-7 main domain objects or concepts
+- estimated_skills: expected number of distinct skills (4-15 typical)
+- has_procedures: true if source describes step-by-step processes
+- has_api_specs: true if source contains API endpoint definitions
+- has_executable_tools: true if source contains scripts, CLI tools, or executable commands
+
+If INSUFFICIENT, add: "insufficient_reason": "what is missing"`,
 		ingested.FileCount, ingested.TotalBytes, sectionCount, depth, summary)
+}
+
+// preFlightAnalysis holds structured domain analysis from the pre-flight LLM call.
+type preFlightAnalysis struct {
+	Verdict            string   `json:"verdict"`
+	Domain             string   `json:"domain"`
+	KeyEntities        []string `json:"key_entities"`
+	EstimatedSkills    int      `json:"estimated_skills"`
+	HasProcedures      bool     `json:"has_procedures"`
+	HasAPISpecs        bool     `json:"has_api_specs"`
+	HasExecutableTools bool     `json:"has_executable_tools"`
+	InsufficientReason string   `json:"insufficient_reason,omitempty"`
+}
+
+// fencedJSONBlockRe matches ```json ... ``` blocks
+var fencedJSONBlockRe = regexp.MustCompile("(?s)```json\\s*\n(.*?)```")
+
+func parsePreFlightAnalysis(output string) *preFlightAnalysis {
+	matches := fencedJSONBlockRe.FindStringSubmatch(output)
+	if len(matches) < 2 {
+		return nil
+	}
+	var analysis preFlightAnalysis
+	if err := json.Unmarshal([]byte(strings.TrimSpace(matches[1])), &analysis); err != nil {
+		return nil
+	}
+	return &analysis
 }
 
 // runPreFlightValidation sends one short LLM call to judge whether the source
 // material is rich enough to produce useful agent skills. If the LLM returns
 // INSUFFICIENT, the run is aborted before the 9-task swarm.
-func runPreFlightValidation(exec *executor.Executor, ingested *ingestion.Context, complexity *ingestion.SourceComplexity) (*executor.Response, error) {
+func runPreFlightValidation(exec *executor.Executor, ingested *ingestion.Context, complexity *ingestion.SourceComplexity) (*executor.Response, *preFlightAnalysis, error) {
 	prompt := buildPreFlightPrompt(ingested, complexity)
 	resp, err := exec.RunPreFlight(prompt)
 	if err != nil {
 		// If the pre-flight call itself fails (timeout, LLM error), log a warning
 		// and proceed -- we don't want infrastructure failures to block the pipeline.
 		fmt.Fprintf(os.Stderr, "WARNING: pre-flight validation call failed: %v (proceeding anyway)\n", err)
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	output := strings.TrimSpace(resp.Output)
+	analysis := parsePreFlightAnalysis(output)
+
+	if analysis != nil && strings.EqualFold(analysis.Verdict, "INSUFFICIENT") {
+		reason := analysis.InsufficientReason
+		if reason == "" {
+			reason = "source material lacks actionable structure for skill decomposition"
+		}
+		ingested.Evidence = append(ingested.Evidence, ingestion.EvidenceEntry{
+			Phase:    ingestion.EvidencePhaseIngestion,
+			Category: ingestion.EvidenceCategoryInputQualityGate,
+			Detail:   fmt.Sprintf("LLM pre-flight verdict: %s", reason),
+		})
+		return resp, analysis, fmt.Errorf("Insufficient source material for skill generation. %s", reason)
+	}
+
+	// Backward compat: check for plain text INSUFFICIENT response
 	if strings.HasPrefix(strings.ToUpper(output), "INSUFFICIENT") {
-		// Extract the explanation after "INSUFFICIENT:" if present.
 		explanation := output
 		if idx := strings.Index(output, ":"); idx >= 0 && idx < len(output)-1 {
 			explanation = strings.TrimSpace(output[idx+1:])
 		}
-		detail := fmt.Sprintf("LLM pre-flight verdict: %s", explanation)
 		ingested.Evidence = append(ingested.Evidence, ingestion.EvidenceEntry{
 			Phase:    ingestion.EvidencePhaseIngestion,
 			Category: ingestion.EvidenceCategoryInputQualityGate,
-			Detail:   detail,
+			Detail:   fmt.Sprintf("LLM pre-flight verdict: %s", explanation),
 		})
-		return resp, fmt.Errorf("Insufficient source material for skill generation. %s", explanation)
+		return resp, nil, fmt.Errorf("Insufficient source material for skill generation. %s", explanation)
 	}
 
-	return resp, nil
+	return resp, analysis, nil
 }
 
 // sanitizeProjectName strips characters that could cause shell injection or

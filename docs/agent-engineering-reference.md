@@ -23,7 +23,7 @@ graph TD
     PARITY --> RENDER["Render Output"]
 ```
 
-The quality gates run in two tiers: a zero-cost sanity check rejects empty directories, then a single LLM pre-flight call (~$0.01) judges whether the source material can produce at least one working skill. Generation runs in two phases: foundational files first (context.md, tasks.md), then dependent files with a summary of Phase A injected into their prompts. Validation runs programmatic checks, depth-adaptive pre-screening, adversarial LLM review, and up to 3 targeted revision rounds with regression detection and citation path repair.
+The quality gates run in two tiers: a zero-cost sanity check rejects empty directories, then a single LLM pre-flight call (~$0.01) judges whether the source material can produce at least one working skill and returns structured domain analysis (domain description, key entities, tool/API detection) that is injected into generation prompts. Generation runs in two phases: foundational files first (context.md, tasks.md), then dependent files with a summary of Phase A injected into their prompts. Validation runs programmatic checks, depth-adaptive pre-screening, adversarial LLM review (with smart summarization: flagged files get full content, unflagged get structured summaries), and up to 3 targeted revision rounds with regression detection and citation path repair.
 
 ## Agent Decomposition (OODA)
 

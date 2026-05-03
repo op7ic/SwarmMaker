@@ -1636,8 +1636,8 @@ func TestBuildPreFlightPromptIncludesMetrics(t *testing.T) {
 		"5000 bytes",
 		"Sections/headings: 5",
 		"Depth classification: moderate",
-		"SUFFICIENT:",
-		"INSUFFICIENT:",
+		"\"verdict\": \"SUFFICIENT\"",
+		"INSUFFICIENT",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
@@ -2542,5 +2542,33 @@ func TestRegenPreservesOtherSkills(t *testing.T) {
 	}
 	if !strings.Contains(string(ledgerBytes), "Revised first skill") {
 		t.Error("skill-a ledger entry not updated")
+	}
+}
+
+func TestParsePreFlightAnalysis(t *testing.T) {
+	output := "```json\n{\"verdict\": \"SUFFICIENT\", \"domain\": \"threat hunting\", \"key_entities\": [\"hashes\", \"events\"], \"estimated_skills\": 10, \"has_procedures\": true, \"has_api_specs\": true, \"has_executable_tools\": true}\n```"
+	analysis := parsePreFlightAnalysis(output)
+	if analysis == nil {
+		t.Fatal("expected non-nil analysis")
+	}
+	if analysis.Verdict != "SUFFICIENT" {
+		t.Errorf("verdict = %q, want SUFFICIENT", analysis.Verdict)
+	}
+	if analysis.Domain != "threat hunting" {
+		t.Errorf("domain = %q, want 'threat hunting'", analysis.Domain)
+	}
+	if len(analysis.KeyEntities) != 2 {
+		t.Errorf("key_entities count = %d, want 2", len(analysis.KeyEntities))
+	}
+	if !analysis.HasExecutableTools {
+		t.Error("expected has_executable_tools = true")
+	}
+}
+
+func TestParsePreFlightAnalysisNilOnBadJSON(t *testing.T) {
+	output := "SUFFICIENT: looks good"
+	analysis := parsePreFlightAnalysis(output)
+	if analysis != nil {
+		t.Error("expected nil analysis for plain text response")
 	}
 }
