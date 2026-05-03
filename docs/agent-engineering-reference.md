@@ -8,19 +8,19 @@ SwarmMaker is a two-stage compiler. Stage 1 uses LLM calls to decompose loose do
 
 ```mermaid
 graph TD
-    INPUT["Loose Documentation"] --> INGEST["Ingest + Discover"]
-    INGEST --> GATE{"Quality Gates"}
+    INPUT["Loose Documentation<br/>docs, code, OpenAPI"] --> INGEST["Ingest + Discover<br/>Parse OpenAPI, detect tools"]
+    INGEST --> GATE{"Quality Gates +<br/>Domain Analysis"}
     GATE -->|insufficient| REJECT["Reject"]
-    GATE -->|sufficient| IR["IR Emit"]
+    GATE -->|"sufficient +<br/>domain context"| IR["IR Emit"]
     IR --> PHASE_A["Phase A<br/>context.md + tasks.md"]
     PHASE_A --> PHASE_B["Phase B<br/>7 dependent files"]
     PHASE_B --> CHECK["Programmatic Checks"]
-    CHECK --> SCREEN["Pre-Screen"]
-    SCREEN --> REVIEW["Adversarial Review"]
+    CHECK --> SCREEN["Pre-Screen<br/>concrete vs advisory flags"]
+    SCREEN --> REVIEW["Adversarial Review<br/>smart summarization"]
     REVIEW -->|approve| PARITY["Parity Check"]
     REVIEW -->|revise| REVISE["Revision + Repair"]
     REVISE --> SCREEN
-    PARITY --> RENDER["Render Output"]
+    PARITY --> RENDER["Render Output<br/>+ MCP tool defs"]
 ```
 
 The quality gates run in two tiers: a zero-cost sanity check rejects empty directories, then a single LLM pre-flight call (~$0.01) judges whether the source material can produce at least one working skill and returns structured domain analysis (domain description, key entities, tool/API detection) that is injected into generation prompts. Generation runs in two phases: foundational files first (context.md, tasks.md), then dependent files with a summary of Phase A injected into their prompts. Validation runs programmatic checks, depth-adaptive pre-screening, adversarial LLM review (with smart summarization: flagged files get full content, unflagged get structured summaries), and up to 3 targeted revision rounds with regression detection and citation path repair.
@@ -46,13 +46,13 @@ Every generated ledger passes through six validation layers. No layer can be ski
 ```mermaid
 graph TD
     LEDGER["Generated Ledger"] --> PROG["Programmatic Checks"]
-    PROG --> PRE["Pre-Screen Gate"]
-    PRE --> REVIEW["Adversarial LLM Review"]
+    PROG --> PRE["Pre-Screen Gate<br/>concrete vs advisory"]
+    PRE --> REVIEW["Adversarial LLM Review<br/>flagged: full content<br/>unflagged: summary"]
     REVIEW -->|approve| PARITY["Render Parity Check"]
     REVIEW -->|revise| REVISE["Targeted Revision<br/>+ Citation Path Repair"]
     REVISE --> RECHECK["Re-Screen"]
-    RECHECK -->|flags remain| REVISE
-    RECHECK -->|clear or max 3| PARITY
+    RECHECK -->|concrete flags remain| REVISE
+    RECHECK -->|"concrete cleared<br/>(advisory ok)"| PARITY
     PARITY --> RESULT["PASS / FAIL"]
 ```
 

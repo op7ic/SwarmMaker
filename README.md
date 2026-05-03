@@ -504,12 +504,14 @@ If the report file cannot be written, it is dumped to stderr as a last resort.
 graph TD
     LEDGER["Generated Ledger"] --> PROG["Programmatic Checks<br/>Links, leaks, meta-commentary"]
     PROG --> PRE["Pre-Screen<br/>Citations, fabrication,<br/>boilerplate, depth-adaptive"]
-    PRE --> REVIEW["Adversarial LLM Review<br/>Cross-file consistency,<br/>source fidelity"]
+    PRE --> FLAGS{"Flag Classification"}
+    FLAGS -->|"concrete flags<br/>(block build)"| REVIEW["Adversarial LLM Review<br/>Flagged files: full content<br/>Unflagged: structured summary"]
+    FLAGS -->|"advisory only<br/>(non-blocking)"| REVIEW
     REVIEW -->|approve| PARITY
     REVIEW -->|revise| REVISE["Targeted Revision<br/>+ Citation Path Repair"]
     REVISE --> RECHECK["Re-Screen<br/>Stops if no improvement<br/>Max 3 rounds"]
     RECHECK -->|concrete flags remain| REVISE
-    RECHECK -->|clear| PARITY
+    RECHECK -->|"concrete cleared<br/>(advisory ok)"| PARITY
     PARITY["Render Parity Check"] --> RESULT["PASS / FAIL"]
 ```
 
